@@ -1,0 +1,11 @@
+{
+  "name": "privatefrp",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev:server": "cd packages/server && bun run dev",
+    "dev:agent": "cd packages/agent && bun run dev",
+    "build:server": "cd packages/server && bun run build",
+    "build:agent": "cd packages/agent && bun run build"
+  }
+}
