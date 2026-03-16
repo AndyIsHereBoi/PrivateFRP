@@ -17,6 +17,7 @@ import {
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const CONTROL_IDLE_TIMEOUT_MS = 20_000;
 const CONTROL_CONNECT_TIMEOUT_MS = 10_000;
+const CONTROL_AUTH_TIMEOUT_MS = 10_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 
@@ -45,6 +46,7 @@ export class Agent {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
+  private controlSocketGeneration = 0;
 
   /**
    * Cached TLS session shared across all data/pool connections.
@@ -97,11 +99,14 @@ export class Agent {
       `[Agent] Connecting to ${this.config.serverHost}:${this.config.serverPort}...`,
     );
 
+    const generation = ++this.controlSocketGeneration;
+
     const socket = tls.connect({
       host: this.config.serverHost,
       port: this.config.serverPort,
       rejectUnauthorized: this.config.tlsRejectUnauthorized,
     });
+    socket.setKeepAlive(true, HEARTBEAT_INTERVAL_MS);
     socket.setTimeout(CONTROL_CONNECT_TIMEOUT_MS);
 
     this.socket = socket;
@@ -113,6 +118,10 @@ export class Agent {
     };
 
     socket.on("secureConnect", () => {
+      if (!this.isActiveControlSocket(socket, generation)) {
+        socket.destroy();
+        return;
+      }
       console.log("[Agent] TLS connected");
       socket.write(
         encodeFrame(MsgType.AgentHello, {
@@ -129,11 +138,19 @@ export class Agent {
     });
 
     let authenticated = false;
+    const authTimeout = setTimeout(() => {
+      if (authenticated || !this.isActiveControlSocket(socket, generation)) return;
+      console.warn("[Agent] Control auth timed out; forcing reconnect");
+      socket.destroy();
+    }, CONTROL_AUTH_TIMEOUT_MS);
 
     decoder.onFrame = (frame) => {
+      if (!this.isActiveControlSocket(socket, generation)) return;
+
       switch (frame.msgType) {
         case MsgType.ServerHello: {
           const body = frame.body as ServerHelloBody;
+          clearTimeout(authTimeout);
           if (!body.ok) {
             console.error("[Agent] Server rejected auth:", body.message);
             socket.destroy();
@@ -141,6 +158,7 @@ export class Agent {
           }
           console.log("[Agent] Authenticated:", body.message);
           authenticated = true;
+          socket.setTimeout(0);
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
           this.startHeartbeat(socket);
@@ -188,6 +206,10 @@ export class Agent {
     };
 
     socket.on("close", () => {
+      clearTimeout(authTimeout);
+      if (!this.isActiveControlSocket(socket, generation)) {
+        return;
+      }
       if (this.socket === socket) {
         this.socket = null;
       }
@@ -200,18 +222,31 @@ export class Agent {
     });
 
     socket.on("error", (err) => {
+      if (!this.isActiveControlSocket(socket, generation)) {
+        return;
+      }
       console.error("[Agent] Socket error:", err.message);
       if (!socket.destroyed) socket.destroy();
     });
 
     socket.on("end", () => {
+      if (!this.isActiveControlSocket(socket, generation)) {
+        return;
+      }
       if (!socket.destroyed) socket.destroy();
     });
 
     socket.on("timeout", () => {
+      if (!this.isActiveControlSocket(socket, generation)) {
+        return;
+      }
       console.warn("[Agent] Control socket timeout; forcing reconnect");
       if (!socket.destroyed) socket.destroy();
     });
+  }
+
+  private isActiveControlSocket(socket: tls.TLSSocket, generation: number): boolean {
+    return this.socket === socket && this.controlSocketGeneration === generation;
   }
 
   private startHeartbeat(socket: tls.TLSSocket): void {
