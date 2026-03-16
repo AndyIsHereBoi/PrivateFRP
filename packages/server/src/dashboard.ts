@@ -44,10 +44,11 @@ const CSS = `
   h3 { font-size: 1rem; font-weight: 600; color: #bfdbfe; margin: 1rem 0 0.5rem; }
   .subtitle { color: #94a3b8; font-size: 0.9rem; margin-bottom: 2rem; }
   nav { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+  .nav-left { display:flex; flex-direction:column; gap:0.65rem; }
   nav a { color: #7dd3fc; text-decoration: none; font-size: 0.9rem; }
   nav a:hover { text-decoration: underline; }
   nav .spacer { flex: 1; }
-  .tabs { display:flex; gap:0.5rem; margin-bottom: 1rem; }
+  .tabs { display:flex; gap:0.5rem; margin-bottom: 0; }
   .tab { display:inline-block; padding:0.45rem 0.8rem; border:1px solid #334155; border-radius:999px; color:#93c5fd; text-decoration:none; font-size:0.85rem; }
   .tab.active { background:#1d4ed8; border-color:#2563eb; color:#fff; }
   table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
@@ -122,7 +123,7 @@ function loginPage(error?: string): string {
 function pageShell(opts: {
   title: string;
   subtitle: string;
-  activeTab: "agents" | "tunnels";
+  activeTab: "agents" | "tunnels" | "traffic";
   publicIp: string;
   content: string;
   registerAction?: boolean;
@@ -137,9 +138,14 @@ function pageShell(opts: {
 <body>
 <div class="container">
   <nav>
-    <div>
+    <div class="nav-left">
       <h1>PrivateFRP</h1>
       <p class="subtitle" style="margin-bottom:0">${opts.subtitle}${opts.publicIp ? ` &mdash; Public IP: <code style="color:#4ade80">${escHtml(opts.publicIp)}</code>` : ""}</p>
+      <div class="tabs">
+        <a class="tab ${opts.activeTab === "agents" ? "active" : ""}" href="/dashboard/agents">Agents</a>
+        <a class="tab ${opts.activeTab === "tunnels" ? "active" : ""}" href="/dashboard/tunnels">Tunnels</a>
+        <a class="tab ${opts.activeTab === "traffic" ? "active" : ""}" href="/dashboard/traffic">Data Tracking</a>
+      </div>
     </div>
     <div class="spacer"></div>
     ${opts.registerAction ? '<a href="#" onclick="document.getElementById(\'registerModal\').classList.add(\'open\');return false">Register Agent</a>' : ""}
@@ -147,13 +153,110 @@ function pageShell(opts: {
       <button class="btn btn-danger" type="submit">Sign Out</button>
     </form>
   </nav>
-  <div class="tabs">
-    <a class="tab ${opts.activeTab === "agents" ? "active" : ""}" href="/dashboard/agents">Agents</a>
-    <a class="tab ${opts.activeTab === "tunnels" ? "active" : ""}" href="/dashboard/tunnels">Tunnels</a>
-  </div>
   ${opts.content}
 </div>
 </body></html>`;
+}
+
+function fmtBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  const rounded = value >= 10 || idx === 0 ? value.toFixed(0) : value.toFixed(1);
+  return `${rounded} ${units[idx]}`;
+}
+
+function trafficPage(
+  tunnels: Array<{
+    id: string;
+    name: string;
+    type: string;
+    agentName: string;
+    incomingTraffic: number;
+    outgoingTraffic: number;
+  }>,
+  publicIp: string,
+): string {
+  const rows = tunnels
+    .map((t) => {
+      return `<tr>
+        <td>${escHtml(t.name)}</td>
+        <td>${escHtml(String(t.type).toUpperCase())}</td>
+        <td>${escHtml(t.agentName)}</td>
+        <td>${escHtml(fmtBytes(t.incomingTraffic))}</td>
+        <td>${escHtml(fmtBytes(t.outgoingTraffic))}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  return pageShell({
+    title: "PrivateFRP - Data Tracking",
+    subtitle: "Traffic Dashboard",
+    activeTab: "traffic",
+    publicIp,
+    content: `
+  <h2>Data Tracking</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Tunnel</th>
+        <th>Type</th>
+        <th>Agent</th>
+        <th>Incoming traffic (traffic hitting the tunnel server sent to the agent)</th>
+        <th>Outgoing traffic (traffic heading from agent to the server and back to client)</th>
+      </tr>
+    </thead>
+    <tbody id="traffic-tbody">${rows || '<tr><td colspan="5" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
+  </table>
+
+<script>
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
+}
+function fmtBytes(bytes) {
+  const num = Number(bytes || 0);
+  if (!Number.isFinite(num) || num <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = num;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  const rounded = value >= 10 || idx === 0 ? value.toFixed(0) : value.toFixed(1);
+  return rounded + ' ' + units[idx];
+}
+async function refreshTraffic() {
+  try {
+    const res = await fetch('/api/traffic');
+    if (!res.ok) return;
+    const tunnels = await res.json();
+    const tbody = document.getElementById('traffic-tbody');
+    if (!tunnels.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:#64748b;text-align:center">No tunnels configured</td></tr>';
+      return;
+    }
+    tbody.innerHTML = tunnels.map(t => {
+      return '<tr>' +
+        '<td>' + esc(t.name) + '</td>' +
+        '<td>' + esc(String(t.type || '').toUpperCase()) + '</td>' +
+        '<td>' + esc(t.agentName || 'Unknown Agent') + '</td>' +
+        '<td>' + esc(fmtBytes(t.incomingTraffic)) + '</td>' +
+        '<td>' + esc(fmtBytes(t.outgoingTraffic)) + '</td>' +
+      '</tr>';
+    }).join('');
+  } catch (_) {}
+}
+
+setInterval(refreshTraffic, 10000);
+</script>
+`,
+  });
 }
 
 function agentsPage(
@@ -588,6 +691,19 @@ export function startDashboard(opts: {
         return html(tunnelsPage(dbAgents, tunnelRows, publicIp));
       }
 
+      if (url.pathname === "/dashboard/traffic" && req.method === "GET") {
+        const agentNameMap = new Map(db.listAgents().map((a) => [a.id, a.name]));
+        const trafficRows = db.listTunnels().map((t) => ({
+          id: t.id,
+          name: t.name,
+          type: t.type,
+          agentName: agentNameMap.get(t.agent_id) ?? "Unknown Agent",
+          incomingTraffic: t.traffic_in_bytes ?? 0,
+          outgoingTraffic: t.traffic_out_bytes ?? 0,
+        }));
+        return html(trafficPage(trafficRows, publicIp));
+      }
+
       if (url.pathname === "/api/agents" && req.method === "GET") {
         const dbAgents = db.listAgents();
         const connectedMap = new Map(agentManager.getAll().map((a) => [a.agentId, a]));
@@ -616,6 +732,20 @@ export function startDashboard(opts: {
 
       if (url.pathname === "/api/tunnels" && req.method === "GET") {
         return json(db.listTunnels().map((t) => db.rowToTunnelConfig(t)));
+      }
+
+      if (url.pathname === "/api/traffic" && req.method === "GET") {
+        const agentNameMap = new Map(db.listAgents().map((a) => [a.id, a.name]));
+        return json(
+          db.listTunnels().map((t) => ({
+            id: t.id,
+            name: t.name,
+            type: t.type,
+            agentName: agentNameMap.get(t.agent_id) ?? "Unknown Agent",
+            incomingTraffic: t.traffic_in_bytes ?? 0,
+            outgoingTraffic: t.traffic_out_bytes ?? 0,
+          })),
+        );
       }
 
       if (url.pathname === "/api/tunnels" && req.method === "POST") {
