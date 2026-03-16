@@ -4,6 +4,7 @@ import type { TunnelConfig } from "@privatefrp/shared";
 import { encodeFrame, MsgType, FrameDecoder } from "@privatefrp/shared";
 import type { AgentManager } from "./agentManager";
 import type { DB } from "./db";
+import { tunnelLog } from "./logger";
 
 /** Idle timeout for UDP sessions - matches typical NAT mapping lifetime */
 const UDP_SESSION_IDLE_MS = 90_000; // 90 seconds
@@ -219,7 +220,7 @@ export class TunnelManager {
         state.pendingOutBytes = 0;
         state.dirty = false;
       } catch (err) {
-        console.error(`[TunnelManager] Failed to flush traffic stats for tunnel ${tunnelId}:`, err);
+        tunnelLog.error(`[TunnelManager] Failed to flush traffic stats for tunnel ${tunnelId}:`, err);
       }
     }
 
@@ -256,7 +257,7 @@ export class TunnelManager {
         state.pendingOutBytes = 0;
         state.dirty = false;
       } catch (err) {
-        console.error(
+        tunnelLog.error(
           `[TunnelManager] Failed to flush IP traffic stats for ${state.tunnelId} ${state.remoteIp}:`,
           err,
         );
@@ -268,7 +269,7 @@ export class TunnelManager {
         this.db.pruneTrafficRollups(nowSec - TRAFFIC_RETENTION_SECONDS);
         this.lastRollupPruneAt = nowSec;
       } catch (err) {
-        console.error("[TunnelManager] Failed to prune traffic rollups:", err);
+        tunnelLog.error("[TunnelManager] Failed to prune traffic rollups:", err);
       }
     }
   }
@@ -305,7 +306,7 @@ export class TunnelManager {
         await this.startUdpListener(tunnel);
       }
     } catch (err) {
-      console.error(`[TunnelManager] Failed to start listener for tunnel ${tunnel.id}:`, err);
+      tunnelLog.error(`[TunnelManager] Failed to start listener for tunnel ${tunnel.id}:`, err);
     }
   }
 
@@ -319,11 +320,11 @@ export class TunnelManager {
       });
 
       server.on("error", (err) => {
-        console.error(`[TunnelManager] TCP listener error on port ${tunnel.listenPort}:`, err);
+        tunnelLog.error(`[TunnelManager] TCP listener error on port ${tunnel.listenPort}:`, err);
       });
 
       server.listen(tunnel.listenPort, () => {
-        console.log(
+        tunnelLog.log(
           `[TunnelManager] TCP listener started for tunnel "${tunnel.name}" on port ${tunnel.listenPort}`,
         );
         this.listeners.set(tunnel.id, { type: "tcp", server, tunnelId: tunnel.id });
@@ -336,7 +337,7 @@ export class TunnelManager {
 
   private async handleTcpConnection(tunnel: TunnelConfig, clientSocket: net.Socket): Promise<void> {
     const requestId = crypto.randomUUID();
-    console.log(
+    tunnelLog.log(
       `[TunnelManager] Inbound TCP on tunnel "${tunnel.name}", requestId=${requestId}`,
     );
 
@@ -400,11 +401,11 @@ export class TunnelManager {
       clientSocket.removeListener("error", onEarlyError);
       const msg = err instanceof Error ? err.message : String(err);
       if (isExpectedDialError(err)) {
-        console.warn(
+        tunnelLog.warn(
           `[TunnelManager] Dial skipped for requestId=${requestId} (${msg})`,
         );
       } else {
-        console.error(`[TunnelManager] Dial failed for requestId=${requestId}: ${msg}`);
+        tunnelLog.error(`[TunnelManager] Dial failed for requestId=${requestId}: ${msg}`);
       }
       if (!clientGone) clientSocket.destroy();
     }
@@ -421,11 +422,11 @@ export class TunnelManager {
       });
 
       sock.on("error", (err) => {
-        console.error(`[TunnelManager] UDP listener error on port ${tunnel.listenPort}:`, err);
+        tunnelLog.error(`[TunnelManager] UDP listener error on port ${tunnel.listenPort}:`, err);
       });
 
       sock.bind(tunnel.listenPort, () => {
-        console.log(
+        tunnelLog.log(
           `[TunnelManager] UDP listener started for tunnel "${tunnel.name}" on port ${tunnel.listenPort}`,
         );
         this.listeners.set(tunnel.id, { type: "udp", socket: sock, tunnelId: tunnel.id, sessions });
@@ -442,7 +443,7 @@ export class TunnelManager {
     session.lastActivity = Date.now();
     clearTimeout(session.idleTimer);
     session.idleTimer = setTimeout(() => {
-      console.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
+      tunnelLog.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
       session.dataConn.destroy();
       sessions.delete(peerAddr);
     }, UDP_SESSION_IDLE_MS);
@@ -459,7 +460,7 @@ export class TunnelManager {
 
     if (!session || session.dataConn.destroyed) {
       const requestId = crypto.randomUUID();
-      console.log(
+      tunnelLog.log(
         `[TunnelManager] New UDP session for tunnel "${tunnel.name}", peer=${peerAddr}, requestId=${requestId}`,
       );
 
@@ -474,15 +475,15 @@ export class TunnelManager {
       } catch (err) {
         const msgText = err instanceof Error ? err.message : String(err);
         if (isExpectedDialError(err)) {
-          console.warn(`[TunnelManager] UDP dial skipped for peer ${peerAddr} (${msgText})`);
+          tunnelLog.warn(`[TunnelManager] UDP dial skipped for peer ${peerAddr} (${msgText})`);
         } else {
-          console.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}: ${msgText}`);
+          tunnelLog.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}: ${msgText}`);
         }
         return;
       }
 
       const idleTimer = setTimeout(() => {
-        console.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
+        tunnelLog.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
         dataConn.destroy();
         sessions.delete(peerAddr);
       }, UDP_SESSION_IDLE_MS);
@@ -515,7 +516,7 @@ export class TunnelManager {
       };
 
       decoder.onError = (err) => {
-        console.error(`[TunnelManager] UDP session decoder error:`, err);
+        tunnelLog.error(`[TunnelManager] UDP session decoder error:`, err);
         dataConn.destroy();
       };
 
@@ -549,7 +550,7 @@ export class TunnelManager {
     if (listener.type === "tcp") {
       return new Promise((resolve) => {
         listener.server.close(() => {
-          console.log(`[TunnelManager] TCP listener stopped for tunnel ${tunnelId}`);
+          tunnelLog.log(`[TunnelManager] TCP listener stopped for tunnel ${tunnelId}`);
           resolve();
         });
       });
@@ -562,7 +563,7 @@ export class TunnelManager {
       }
       listener.sessions.clear();
       listener.socket.close(() => {
-        console.log(`[TunnelManager] UDP listener stopped for tunnel ${tunnelId}`);
+        tunnelLog.log(`[TunnelManager] UDP listener stopped for tunnel ${tunnelId}`);
         resolve();
       });
     });

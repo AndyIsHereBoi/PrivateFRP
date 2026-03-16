@@ -7,6 +7,7 @@
     "build": "bun build src/index.ts --compile --outfile ../../dist/server"
   },
   "dependencies": {
-    "@privatefrp/shared": "workspace:*"
+    "@privatefrp/shared": "workspace:*",
+    "streamroller": "^3.1.5"
   }
 }

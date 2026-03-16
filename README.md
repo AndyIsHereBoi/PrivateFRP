@@ -194,6 +194,8 @@ chmod +x ./privatefrp-agent-linux-amd64
 - If using self-signed certs, set `TLS_REJECT_UNAUTHORIZED=false` on agents.
 - Ensure tunnel listen ports are exposed in Docker if you run the server in containers.
 - Agent credentials are generated from the dashboard and must match exactly.
+- Set `LOG_PATH` to control where runtime logs are written.
+- Server writes `tunnel.log` and `webserver.log`; agent writes `agent.log`.
 
 ## Backend Documentation
 

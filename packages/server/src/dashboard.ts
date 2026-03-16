@@ -1,5 +1,6 @@
 ﻿import type { DB } from "./db";
 import type { AgentManager } from "./agentManager";
+import { webLog } from "./logger";
 
 // Session management
 const sessions = new Map<string, { user: string; expiresAt: number }>();
@@ -1050,55 +1051,79 @@ export function startDashboard(opts: {
   Bun.serve({
     port,
     async fetch(req: Request) {
-      const url = new URL(req.url);
+      const method = req.method || "GET";
+      const url = parseRequestUrl(req);
+      if (!url) {
+        webLog.warn(`[Dashboard] ${method} <invalid-url> -> 400`);
+        return new Response("Bad Request", { status: 400 });
+      }
+
       const cookie = req.headers.get("cookie");
+      webLog.log(`[Dashboard] ${method} ${url.pathname}`);
 
-      if (url.pathname === "/login") {
-        if (req.method === "GET") return html(loginPage());
-        if (req.method === "POST") {
-          const form = await req.formData();
-          const user = form.get("username")?.toString() ?? "";
-          const pass = form.get("password")?.toString() ?? "";
-          if (user === credentials.user && pass === credentials.pass) {
-            const sid = createSession(user);
-            return new Response(null, {
-              status: 302,
-              headers: {
-                Location: "/dashboard/agents",
-                "Set-Cookie": `session=${sid}; Path=/; HttpOnly; SameSite=Lax`,
-              },
-            });
+      try {
+        if (url.pathname === "/login") {
+          if (req.method === "GET") return html(loginPage());
+          if (req.method === "POST") {
+            const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
+            const isForm = contentType.includes("application/x-www-form-urlencoded") ||
+              contentType.includes("multipart/form-data");
+            if (!isForm) {
+              webLog.warn(`[Dashboard] ${method} ${url.pathname} invalid login content-type: ${contentType || "none"}`);
+              return html(loginPage("Invalid login request"), 400);
+            }
+
+            let form: FormData;
+            try {
+              form = await req.formData();
+            } catch {
+              webLog.warn(`[Dashboard] ${method} ${url.pathname} invalid login form body`);
+              return html(loginPage("Invalid login request"), 400);
+            }
+
+            const user = form.get("username")?.toString() ?? "";
+            const pass = form.get("password")?.toString() ?? "";
+            if (user === credentials.user && pass === credentials.pass) {
+              const sid = createSession(user);
+              return new Response(null, {
+                status: 302,
+                headers: {
+                  Location: "/dashboard/agents",
+                  "Set-Cookie": `session=${sid}; Path=/; HttpOnly; SameSite=Lax`,
+                },
+              });
+            }
+            webLog.warn(`[Dashboard] ${method} ${url.pathname} login rejected for user=${user || "<empty>"}`);
+            return html(loginPage("Invalid username or password"), 401);
           }
-          return html(loginPage("Invalid username or password"), 401);
         }
-      }
 
-      if (url.pathname === "/logout" && req.method === "POST") {
-        deleteSession(cookie);
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: "/login",
-            "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
-          },
-        });
-      }
+        if (url.pathname === "/logout" && req.method === "POST") {
+          deleteSession(cookie);
+          return new Response(null, {
+            status: 302,
+            headers: {
+              Location: "/login",
+              "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
+            },
+          });
+        }
 
-      if (url.pathname === "/" || url.pathname === "") {
+        if (url.pathname === "/" || url.pathname === "") {
+          const user = validateSession(cookie);
+          return new Response(null, {
+            status: 302,
+            headers: { Location: user ? "/dashboard/agents" : "/login" },
+          });
+        }
+
         const user = validateSession(cookie);
-        return new Response(null, {
-          status: 302,
-          headers: { Location: user ? "/dashboard/agents" : "/login" },
-        });
-      }
+        if (!user) {
+          if (url.pathname.startsWith("/api/")) return json({ error: "Unauthorized" }, 401);
+          return new Response(null, { status: 302, headers: { Location: "/login" } });
+        }
 
-      const user = validateSession(cookie);
-      if (!user) {
-        if (url.pathname.startsWith("/api/")) return json({ error: "Unauthorized" }, 401);
-        return new Response(null, { status: 302, headers: { Location: "/login" } });
-      }
-
-      if ((url.pathname === "/dashboard" || url.pathname === "/dashboard/agents") && req.method === "GET") {
+        if ((url.pathname === "/dashboard" || url.pathname === "/dashboard/agents") && req.method === "GET") {
         const dbAgents = db.listAgents();
         const connectedMap = new Map(agentManager.getAll().map((a) => [a.agentId, a]));
         const agentsView = dbAgents.map((a) => {
@@ -1112,9 +1137,9 @@ export function startDashboard(opts: {
           };
         });
         return html(agentsPage(agentsView, publicIp));
-      }
+        }
 
-      if (url.pathname === "/dashboard/tunnels" && req.method === "GET") {
+        if (url.pathname === "/dashboard/tunnels" && req.method === "GET") {
         const dbAgents = db.listAgents().map((a) => ({ id: a.id, name: a.name }));
         const tunnelRows = db.listTunnels().map((t) => ({
           id: t.id,
@@ -1126,9 +1151,9 @@ export function startDashboard(opts: {
           agentId: t.agent_id,
         }));
         return html(tunnelsPage(dbAgents, tunnelRows, publicIp));
-      }
+        }
 
-      if (url.pathname === "/dashboard/traffic" && req.method === "GET") {
+        if (url.pathname === "/dashboard/traffic" && req.method === "GET") {
         const payload = await buildTrafficPayload(db, {
           window: parseTrafficWindow(url.searchParams.get("window")),
           tunnelSort: parseTunnelSort(url.searchParams.get("tunnelSort")),
@@ -1137,9 +1162,9 @@ export function startDashboard(opts: {
           ipDir: parseSortDir(url.searchParams.get("ipDir")),
         });
         return html(trafficPage(payload, publicIp));
-      }
+        }
 
-      if (url.pathname === "/api/agents" && req.method === "GET") {
+        if (url.pathname === "/api/agents" && req.method === "GET") {
         const dbAgents = db.listAgents();
         const connectedMap = new Map(agentManager.getAll().map((a) => [a.agentId, a]));
         return json(
@@ -1155,33 +1180,33 @@ export function startDashboard(opts: {
             };
           }),
         );
-      }
+        }
 
-      if (url.pathname === "/api/agents/register" && (req.method === "GET" || req.method === "POST")) {
+        if (url.pathname === "/api/agents/register" && (req.method === "GET" || req.method === "POST")) {
         const agentId = crypto.randomUUID();
         const agentSecret = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
         const agentName = url.searchParams.get("name")?.trim() || `agent-${agentId.slice(0, 8)}`;
         db.createAgent(agentId, agentName, agentSecret);
         return json({ agentId, agentName, agentSecret });
-      }
+        }
 
-      if (url.pathname === "/api/tunnels" && req.method === "GET") {
-        return json(db.listTunnels().map((t) => db.rowToTunnelConfig(t)));
-      }
+        if (url.pathname === "/api/tunnels" && req.method === "GET") {
+          return json(db.listTunnels().map((t) => db.rowToTunnelConfig(t)));
+        }
 
-      if (url.pathname === "/api/traffic" && req.method === "GET") {
-        return json(
-          await buildTrafficPayload(db, {
-            window: parseTrafficWindow(url.searchParams.get("window")),
-            tunnelSort: parseTunnelSort(url.searchParams.get("tunnelSort")),
-            tunnelDir: parseSortDir(url.searchParams.get("tunnelDir")),
-            ipSort: parseIpSort(url.searchParams.get("ipSort")),
-            ipDir: parseSortDir(url.searchParams.get("ipDir")),
-          }),
-        );
-      }
+        if (url.pathname === "/api/traffic" && req.method === "GET") {
+          return json(
+            await buildTrafficPayload(db, {
+              window: parseTrafficWindow(url.searchParams.get("window")),
+              tunnelSort: parseTunnelSort(url.searchParams.get("tunnelSort")),
+              tunnelDir: parseSortDir(url.searchParams.get("tunnelDir")),
+              ipSort: parseIpSort(url.searchParams.get("ipSort")),
+              ipDir: parseSortDir(url.searchParams.get("ipDir")),
+            }),
+          );
+        }
 
-      if (url.pathname === "/api/tunnels" && req.method === "POST") {
+        if (url.pathname === "/api/tunnels" && req.method === "POST") {
         let body: Record<string, string>;
         const contentType = req.headers.get("content-type") ?? "";
         if (contentType.includes("application/json")) {
@@ -1202,12 +1227,12 @@ export function startDashboard(opts: {
         const row = db.createTunnel(id, name, type, parseInt(listenPort, 10), targetHost, parseInt(targetPort, 10), agentId);
         await onTunnelsChanged();
         return json(db.rowToTunnelConfig(row), 201);
-      }
+        }
 
-      const updateTunnelMatch = (req.method === "PUT" || req.method === "PATCH")
-        ? url.pathname.match(/^\/api\/tunnels\/([^/]+)$/)
-        : null;
-      if (updateTunnelMatch) {
+        const updateTunnelMatch = (req.method === "PUT" || req.method === "PATCH")
+          ? url.pathname.match(/^\/api\/tunnels\/([^/]+)$/)
+          : null;
+        if (updateTunnelMatch) {
         const id = updateTunnelMatch[1];
         if (!db.getTunnel(id)) return json({ error: "Tunnel not found" }, 404);
 
@@ -1231,21 +1256,21 @@ export function startDashboard(opts: {
         await onTunnelsChanged();
         if (!updated) return json({ error: "Tunnel not found" }, 404);
         return json(db.rowToTunnelConfig(updated));
-      }
+        }
 
-      const deleteTunnelMatch = url.pathname.match(/^\/api\/tunnels\/([^/]+)\/delete$/) ||
-        (req.method === "DELETE" && url.pathname.match(/^\/api\/tunnels\/([^/]+)$/));
-      if (deleteTunnelMatch) {
+        const deleteTunnelMatch = url.pathname.match(/^\/api\/tunnels\/([^/]+)\/delete$/) ||
+          (req.method === "DELETE" && url.pathname.match(/^\/api\/tunnels\/([^/]+)$/));
+        if (deleteTunnelMatch) {
         const id = deleteTunnelMatch[1];
         if (!db.getTunnel(id)) return json({ error: "Tunnel not found" }, 404);
         db.deleteTunnel(id);
         await onTunnelsChanged();
         return json({ ok: true });
-      }
+        }
 
-      const deleteAgentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/delete$/) ||
-        (req.method === "DELETE" && url.pathname.match(/^\/api\/agents\/([^/]+)$/));
-      if (deleteAgentMatch) {
+        const deleteAgentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/delete$/) ||
+          (req.method === "DELETE" && url.pathname.match(/^\/api\/agents\/([^/]+)$/));
+        if (deleteAgentMatch) {
         const id = deleteAgentMatch[1];
         if (!db.getAgent(id)) return json({ error: "Agent not found" }, 404);
         const agentTunnels = db.listTunnelsForAgent(id);
@@ -1254,13 +1279,17 @@ export function startDashboard(opts: {
         agentManager.unregister(id);
         await onTunnelsChanged();
         return json({ ok: true });
-      }
+        }
 
-      return new Response("Not Found", { status: 404 });
+        return new Response("Not Found", { status: 404 });
+      } catch (err) {
+        webLog.error(`[Dashboard] ${method} ${url.pathname} failed:`, err);
+        return json({ error: "Internal server error" }, 500);
+      }
     },
   });
 
-  console.log(`[Dashboard] Listening on http://0.0.0.0:${port}`);
+  webLog.log(`[Dashboard] Listening on http://0.0.0.0:${port}`);
 }
 
 function html(body: string, status = 200): Response {
@@ -1275,4 +1304,13 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function parseRequestUrl(req: Request): URL | null {
+  try {
+    const host = req.headers.get("host") || "localhost";
+    return new URL(req.url, `http://${host}`);
+  } catch {
+    return null;
+  }
 }

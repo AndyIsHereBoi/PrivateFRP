@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Agent } from "./agent";
+import { configureAgentLogging } from "./logger";
 
 function loadEnvFile(fileName: string): void {
   const candidates: string[] = [];
@@ -51,6 +52,7 @@ function loadEnvFile(fileName: string): void {
 }
 
 loadEnvFile("agent.env");
+configureAgentLogging(process.env.LOG_PATH ?? "./logs");
 
 const serverHost = process.env.SERVER_HOST ?? "localhost";
 const serverPort = parseInt(process.env.SERVER_PORT ?? "7000", 10);

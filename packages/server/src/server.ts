@@ -14,6 +14,7 @@ import type { DB } from "./db";
 import { AgentManager } from "./agentManager";
 import { TunnelManager } from "./tunnelManager";
 import { startDashboard } from "./dashboard";
+import { tunnelLog } from "./logger";
 
 export interface ServerConfig {
   agentPort: number;
@@ -31,6 +32,7 @@ export class Server {
   private agentManager: AgentManager;
   private tunnelManager: TunnelManager;
   private tlsServer!: tls.Server;
+  private probeNoiseCounters = new Map<string, { windowStart: number; count: number }>();
 
   constructor(config: ServerConfig, db: DB) {
     this.config = config;
@@ -88,11 +90,11 @@ export class Server {
       });
 
       this.tlsServer.on("error", (err) => {
-        console.error("[Server] TLS server error:", err);
+        tunnelLog.error("[Server] TLS server error:", err);
       });
 
       this.tlsServer.listen(this.config.agentPort, () => {
-        console.log(`[Server] TLS server listening on port ${this.config.agentPort}`);
+        tunnelLog.log(`[Server] TLS server listening on port ${this.config.agentPort}`);
         resolve();
       });
 
@@ -141,7 +143,14 @@ export class Server {
 
     decoder.onFrame = onFirstFrame;
     decoder.onError = (err) => {
-      console.error("[Server] Frame decoder error on new connection:", err);
+      const remote = socket.remoteAddress ?? "unknown";
+      if (err.message.startsWith("Invalid frame length:")) {
+        if (this.shouldLogProbeNoise(remote)) {
+          tunnelLog.warn(`[Server] Dropped non-protocol TLS client from ${remote}: ${err.message}`);
+        }
+      } else {
+        tunnelLog.warn(`[Server] Frame decoder error on new connection from ${remote}: ${err.message}`);
+      }
       socket.destroy();
     };
 
@@ -149,19 +158,36 @@ export class Server {
 
     socket.on("error", (err) => {
       if (!classified) {
-        console.warn("[Server] Connection error before classification:", err.message);
+        tunnelLog.warn("[Server] Connection error before classification:", err.message);
       }
     });
 
     // Timeout unclassified connections after 10s
     const classifyTimeout = setTimeout(() => {
       if (!classified) {
-        console.warn("[Server] Connection timed out before classification");
+        tunnelLog.warn("[Server] Connection timed out before classification");
         socket.destroy();
       }
     }, 10_000);
 
     socket.on("close", () => clearTimeout(classifyTimeout));
+  }
+
+  private shouldLogProbeNoise(remoteAddress: string): boolean {
+    const now = Date.now();
+    const key = remoteAddress;
+    const existing = this.probeNoiseCounters.get(key);
+
+    if (!existing || now - existing.windowStart >= 60_000) {
+      this.probeNoiseCounters.set(key, { windowStart: now, count: 1 });
+      return true;
+    }
+
+    existing.count += 1;
+
+    // Keep logs useful but avoid spam from internet scanners.
+    if (existing.count <= 3) return true;
+    return existing.count % 25 === 0;
   }
 
   private handleControlConnection(
@@ -175,7 +201,7 @@ export class Server {
     const agentRow = this.db.getAgent(agentId);
 
     if (!agentRow || agentRow.secret !== agentSecret) {
-      console.warn(`[Server] Agent auth failed for id=${agentId}`);
+      tunnelLog.warn(`[Server] Agent auth failed for id=${agentId}`);
       socket.write(
         encodeFrame(MsgType.ServerHello, {
           ok: false,
@@ -187,7 +213,7 @@ export class Server {
       return;
     }
 
-    console.log(`[Server] Agent connected: ${agentId} (${agentRow.name})`);
+    tunnelLog.log(`[Server] Agent connected: ${agentId} (${agentRow.name})`);
 
     // Send ServerHello with current tunnel config for this agent
     const tunnelRows = this.db.listTunnelsForAgent(agentId);
@@ -231,23 +257,23 @@ export class Server {
         }
         this.agentManager.updateHeartbeat(agentId);
       } else {
-        console.warn(`[Server] Unexpected frame on control connection: type=0x${frame.msgType.toString(16)}`);
+        tunnelLog.warn(`[Server] Unexpected frame on control connection: type=0x${frame.msgType.toString(16)}`);
       }
     };
 
     decoder.onError = (err) => {
-      console.error(`[Server] Control connection decoder error for agent ${agentId}:`, err);
+      tunnelLog.error(`[Server] Control connection decoder error for agent ${agentId}:`, err);
       socket.destroy();
     };
 
     socket.on("close", () => {
       clearInterval(heartbeatInterval);
       this.agentManager.unregister(agentId);
-      console.log(`[Server] Agent disconnected: ${agentId}`);
+      tunnelLog.log(`[Server] Agent disconnected: ${agentId}`);
     });
 
     socket.on("error", (err) => {
-      console.error(`[Server] Control socket error for agent ${agentId}:`, err.message);
+      tunnelLog.error(`[Server] Control socket error for agent ${agentId}:`, err.message);
     });
   }
 
@@ -255,7 +281,7 @@ export class Server {
     const { requestId, agentId } = hello;
     const fulfilled = this.agentManager.fulfillDial(agentId, requestId, socket);
     if (!fulfilled) {
-      console.warn(
+      tunnelLog.warn(
         `[Server] No pending dial for agentId=${agentId} requestId=${requestId}; closing data conn`,
       );
       socket.destroy();
