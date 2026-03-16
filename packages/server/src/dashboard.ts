@@ -38,18 +38,38 @@ function normalizeRemoteIp(ip: string | null | undefined): string {
 const CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-  .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 6.5rem 2rem 2rem; }
+  .topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 72px;
+    background: rgba(15, 23, 42, 0.96);
+    border-bottom: 1px solid #334155;
+    backdrop-filter: blur(6px);
+    z-index: 200;
+  }
+  .topbar-inner {
+    max-width: 1200px;
+    height: 100%;
+    margin: 0 auto;
+    padding: 0 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .topbar-left { display:flex; align-items:center; gap:1rem; min-width:0; }
+  .brand { font-size: 1.15rem; font-weight: 800; color: #38bdf8; letter-spacing: 0.02em; }
+  .page-title { font-size: 0.95rem; color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-right { display:flex; align-items:center; gap:0.5rem; }
   h1 { font-size: 1.8rem; font-weight: 700; color: #38bdf8; margin-bottom: 0.25rem; }
   h2 { font-size: 1.2rem; font-weight: 600; color: #7dd3fc; margin: 1.5rem 0 0.75rem; }
   h3 { font-size: 1rem; font-weight: 600; color: #bfdbfe; margin: 1rem 0 0.5rem; }
   .subtitle { color: #94a3b8; font-size: 0.9rem; margin-bottom: 2rem; }
-  nav { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
-  .nav-left { display:flex; flex-direction:column; gap:0.65rem; }
-  nav a { color: #7dd3fc; text-decoration: none; font-size: 0.9rem; }
-  nav a:hover { text-decoration: underline; }
-  nav .spacer { flex: 1; }
   .tabs { display:flex; gap:0.5rem; margin-bottom: 0; }
-  .tab { display:inline-block; padding:0.45rem 0.8rem; border:1px solid #334155; border-radius:999px; color:#93c5fd; text-decoration:none; font-size:0.85rem; }
+  .tab { display:inline-block; padding:0.42rem 0.72rem; border:1px solid #334155; border-radius:8px; color:#93c5fd; text-decoration:none; font-size:0.82rem; }
   .tab.active { background:#1d4ed8; border-color:#2563eb; color:#fff; }
   table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
   th { background: #0f172a; padding: 0.75rem 1rem; text-align: left; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
@@ -136,23 +156,26 @@ function pageShell(opts: {
 <style>${CSS}</style>
 </head>
 <body>
-<div class="container">
-  <nav>
-    <div class="nav-left">
-      <h1>PrivateFRP</h1>
-      <p class="subtitle" style="margin-bottom:0">${opts.subtitle}${opts.publicIp ? ` &mdash; Public IP: <code style="color:#4ade80">${escHtml(opts.publicIp)}</code>` : ""}</p>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-left">
+      <div class="brand">PrivateFRP</div>
+      <div class="page-title">${escHtml(opts.subtitle)}${opts.publicIp ? ` - Public IP: ${escHtml(opts.publicIp)}` : ""}</div>
+    </div>
+    <div class="topbar-right">
       <div class="tabs">
         <a class="tab ${opts.activeTab === "agents" ? "active" : ""}" href="/dashboard/agents">Agents</a>
         <a class="tab ${opts.activeTab === "tunnels" ? "active" : ""}" href="/dashboard/tunnels">Tunnels</a>
         <a class="tab ${opts.activeTab === "traffic" ? "active" : ""}" href="/dashboard/traffic">Data Tracking</a>
       </div>
+      ${opts.registerAction ? '<a class="tab" href="#" onclick="document.getElementById(\'registerModal\').classList.add(\'open\');return false">Register Agent</a>' : ""}
+      <form method="POST" action="/logout" style="display:inline">
+        <button class="btn btn-danger" type="submit">Sign Out</button>
+      </form>
     </div>
-    <div class="spacer"></div>
-    ${opts.registerAction ? '<a href="#" onclick="document.getElementById(\'registerModal\').classList.add(\'open\');return false">Register Agent</a>' : ""}
-    <form method="POST" action="/logout" style="display:inline">
-      <button class="btn btn-danger" type="submit">Sign Out</button>
-    </form>
-  </nav>
+  </div>
+</header>
+<div class="container">
   ${opts.content}
 </div>
 </body></html>`;
@@ -182,15 +205,28 @@ function trafficPage(
   }>,
   publicIp: string,
 ): string {
-  const rows = tunnels
-    .map((t) => {
-      return `<tr>
-        <td>${escHtml(t.name)}</td>
-        <td>${escHtml(String(t.type).toUpperCase())}</td>
-        <td>${escHtml(t.agentName)}</td>
-        <td>${escHtml(fmtBytes(t.incomingTraffic))}</td>
-        <td>${escHtml(fmtBytes(t.outgoingTraffic))}</td>
-      </tr>`;
+  const byAgent = new Map<string, typeof tunnels>();
+  for (const t of tunnels) {
+    const key = t.agentName || "Unknown Agent";
+    const list = byAgent.get(key);
+    if (list) list.push(t);
+    else byAgent.set(key, [t]);
+  }
+
+  const rows = Array.from(byAgent.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([agentName, items]) => {
+      const itemRows = items
+        .map((t) => {
+          return `<tr>
+            <td>${escHtml(t.name)}</td>
+            <td>${escHtml(String(t.type).toUpperCase())}</td>
+            <td>${escHtml(fmtBytes(t.incomingTraffic))}</td>
+            <td>${escHtml(fmtBytes(t.outgoingTraffic))}</td>
+          </tr>`;
+        })
+        .join("\n");
+      return `<tr><td colspan="4" style="background:#111827;color:#93c5fd;font-weight:700;border-top:1px solid #334155">${escHtml(agentName)}</td></tr>${itemRows}`;
     })
     .join("\n");
 
@@ -206,12 +242,11 @@ function trafficPage(
       <tr>
         <th>Tunnel</th>
         <th>Type</th>
-        <th>Agent</th>
-        <th>Incoming traffic (traffic hitting the tunnel server sent to the agent)</th>
-        <th>Outgoing traffic (traffic heading from agent to the server and back to client)</th>
+        <th>Incoming traffic</th>
+        <th>Outgoing traffic</th>
       </tr>
     </thead>
-    <tbody id="traffic-tbody">${rows || '<tr><td colspan="5" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
+    <tbody id="traffic-tbody">${rows || '<tr><td colspan="4" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
   </table>
 
 <script>
@@ -238,17 +273,27 @@ async function refreshTraffic() {
     const tunnels = await res.json();
     const tbody = document.getElementById('traffic-tbody');
     if (!tunnels.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:#64748b;text-align:center">No tunnels configured</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;text-align:center">No tunnels configured</td></tr>';
       return;
     }
-    tbody.innerHTML = tunnels.map(t => {
-      return '<tr>' +
-        '<td>' + esc(t.name) + '</td>' +
-        '<td>' + esc(String(t.type || '').toUpperCase()) + '</td>' +
-        '<td>' + esc(t.agentName || 'Unknown Agent') + '</td>' +
-        '<td>' + esc(fmtBytes(t.incomingTraffic)) + '</td>' +
-        '<td>' + esc(fmtBytes(t.outgoingTraffic)) + '</td>' +
-      '</tr>';
+    const byAgent = {};
+    tunnels.forEach(t => {
+      const key = t.agentName || 'Unknown Agent';
+      if (!byAgent[key]) byAgent[key] = [];
+      byAgent[key].push(t);
+    });
+    const groups = Object.keys(byAgent).sort();
+    tbody.innerHTML = groups.map(agentName => {
+      const groupHeader = '<tr><td colspan="4" style="background:#111827;color:#93c5fd;font-weight:700;border-top:1px solid #334155">' + esc(agentName) + '</td></tr>';
+      const rows = byAgent[agentName].map(t => {
+        return '<tr>' +
+          '<td>' + esc(t.name) + '</td>' +
+          '<td>' + esc(String(t.type || '').toUpperCase()) + '</td>' +
+          '<td>' + esc(fmtBytes(t.incomingTraffic)) + '</td>' +
+          '<td>' + esc(fmtBytes(t.outgoingTraffic)) + '</td>' +
+        '</tr>';
+      }).join('');
+      return groupHeader + rows;
     }).join('');
   } catch (_) {}
 }
