@@ -63,11 +63,12 @@ export class Server {
   private async reloadTunnels(): Promise<void> {
     const rows = this.db.listTunnels();
     const tunnels: TunnelConfig[] = rows.map((r) => this.db.rowToTunnelConfig(r));
-    await this.tunnelManager.syncTunnels(tunnels);
+    const assignedTunnels = tunnels.filter((t) => !!t.agentId);
+    await this.tunnelManager.syncTunnels(assignedTunnels);
 
     // Push updated config to all connected agents
     for (const agent of this.agentManager.getAll()) {
-      const agentTunnels = tunnels.filter((t) => t.agentId === agent.agentId);
+      const agentTunnels = assignedTunnels.filter((t) => t.agentId === agent.agentId);
       try {
         agent.socket.write(encodeFrame(MsgType.ConfigPush, { tunnels: agentTunnels }));
         this.agentManager.updateTunnels(agent.agentId, agentTunnels);

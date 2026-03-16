@@ -206,6 +206,10 @@ export class DB {
     this.db.query("DELETE FROM tunnels WHERE id = ?").run(id);
   }
 
+  unassignTunnelsForAgent(agentId: string): void {
+    this.db.query("UPDATE tunnels SET agent_id = '' WHERE agent_id = ?").run(agentId);
+  }
+
   updateTunnelTrafficTotals(id: string, inBytes: number, outBytes: number): void {
     this.db
       .query("UPDATE tunnels SET traffic_in_bytes = ?, traffic_out_bytes = ? WHERE id = ?")

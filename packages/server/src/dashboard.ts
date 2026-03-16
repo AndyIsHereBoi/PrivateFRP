@@ -926,9 +926,11 @@ function esc(s) {
 }
 
 function updateAgentSelects() {
-  const options = AGENTS.length
+  const unassignedOption = '<option value="">Unassigned</option>';
+  const agentOptions = AGENTS.length
     ? AGENTS.map(a => \`<option value="\${esc(a.id)}">\${esc(a.name)} (\${esc(a.id.slice(0,8))})</option>\`).join('')
-    : '<option value="">No agents</option>';
+    : '';
+  const options = unassignedOption + agentOptions;
   document.getElementById('agentSelect').innerHTML = options;
   document.getElementById('editAgentId').innerHTML = options;
 }
@@ -942,6 +944,7 @@ function renderGroups() {
 
   const agentName = {};
   AGENTS.forEach(a => { agentName[a.id] = a.name; });
+  agentName[''] = 'Unassigned';
 
   const orderedAgentIds = [...AGENTS.map(a => a.id), ...Object.keys(byAgent).filter(id => !agentName[id])];
   const groupsEl = document.getElementById('groups');
@@ -1249,11 +1252,11 @@ export function startDashboard(opts: {
         }
 
         const { name, type, listenPort, targetHost, targetPort, agentId } = body;
-        if (!name || !type || !listenPort || !targetHost || !targetPort || !agentId) {
+        if (!name || !type || !listenPort || !targetHost || !targetPort || agentId === undefined) {
           return json({ error: "Missing required fields" }, 400);
         }
         if (type !== "tcp" && type !== "udp") return json({ error: "type must be tcp or udp" }, 400);
-        if (!db.getAgent(agentId)) return json({ error: "Agent not found" }, 404);
+        if (agentId && !db.getAgent(agentId)) return json({ error: "Agent not found" }, 404);
 
         const id = crypto.randomUUID();
         const row = db.createTunnel(id, name, type, parseInt(listenPort, 10), targetHost, parseInt(targetPort, 10), agentId);
@@ -1278,11 +1281,11 @@ export function startDashboard(opts: {
         }
 
         const { name, type, listenPort, targetHost, targetPort, agentId } = body;
-        if (!name || !type || !listenPort || !targetHost || !targetPort || !agentId) {
+        if (!name || !type || !listenPort || !targetHost || !targetPort || agentId === undefined) {
           return json({ error: "Missing required fields" }, 400);
         }
         if (type !== "tcp" && type !== "udp") return json({ error: "type must be tcp or udp" }, 400);
-        if (!db.getAgent(agentId)) return json({ error: "Agent not found" }, 404);
+        if (agentId && !db.getAgent(agentId)) return json({ error: "Agent not found" }, 404);
 
         const updated = db.updateTunnel(id, name, type, parseInt(listenPort, 10), targetHost, parseInt(targetPort, 10), agentId);
         await onTunnelsChanged();
@@ -1305,8 +1308,7 @@ export function startDashboard(opts: {
         if (deleteAgentMatch) {
         const id = deleteAgentMatch[1];
         if (!db.getAgent(id)) return json({ error: "Agent not found" }, 404);
-        const agentTunnels = db.listTunnelsForAgent(id);
-        for (const t of agentTunnels) db.deleteTunnel(t.id);
+        db.unassignTunnelsForAgent(id);
         db.deleteAgent(id);
         agentManager.unregister(id);
         await onTunnelsChanged();
