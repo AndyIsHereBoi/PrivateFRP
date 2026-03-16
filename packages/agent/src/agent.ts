@@ -46,6 +46,7 @@ export class Agent {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private controlWatchdogInterval: ReturnType<typeof setInterval> | null = null;
   private controlHealthInterval: ReturnType<typeof setInterval> | null = null;
+  private serverHeartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
@@ -89,6 +90,7 @@ export class Agent {
     this.poolEnabled = false;
     this.cleanupControlWatchdog();
     this.cleanupControlHealthMonitor();
+    this.cleanupServerHeartbeatTimeout();
     this.cleanupReconnectTimer();
     this.socket?.destroy();
   }
@@ -175,6 +177,7 @@ export class Agent {
           socket.setTimeout(0);
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
+          this.markServerHeartbeatReceived();
           this.startHeartbeat(socket);
           this.startControlWatchdog(socket, () => this.controlLastRxAt);
           // Start pre-warming connections now that we are authenticated
@@ -191,7 +194,7 @@ export class Agent {
         }
 
         case MsgType.Heartbeat:
-          this.controlLastHeartbeatAt = Date.now();
+          this.markServerHeartbeatReceived();
           // Echo server timestamp so the server can measure RTT.
           socket.write(
             encodeFrame(
@@ -233,6 +236,7 @@ export class Agent {
       this.activePoolConnections = 0;
       this.cleanupHeartbeat();
       this.cleanupControlWatchdog();
+      this.cleanupServerHeartbeatTimeout();
       if (!this.stopping) {
         this.scheduleReconnect("control channel closed");
       }
@@ -286,6 +290,7 @@ export class Agent {
         this.poolEnabled = false;
         this.cleanupHeartbeat();
         this.cleanupControlWatchdog();
+        this.cleanupServerHeartbeatTimeout();
         this.scheduleReconnect("control socket inactive");
         return;
       }
@@ -322,6 +327,37 @@ export class Agent {
     if (this.controlHealthInterval) {
       clearInterval(this.controlHealthInterval);
       this.controlHealthInterval = null;
+    }
+  }
+
+  private markServerHeartbeatReceived(): void {
+    this.controlLastHeartbeatAt = Date.now();
+    this.armServerHeartbeatTimeout();
+  }
+
+  private armServerHeartbeatTimeout(): void {
+    this.cleanupServerHeartbeatTimeout();
+    if (this.stopping || !this.controlAuthenticated) return;
+
+    this.serverHeartbeatTimeout = setTimeout(() => {
+      if (this.stopping || !this.controlAuthenticated) return;
+      const heartbeatAge = Date.now() - this.controlLastHeartbeatAt;
+      if (heartbeatAge < CONTROL_HEARTBEAT_TIMEOUT_MS) {
+        this.armServerHeartbeatTimeout();
+        return;
+      }
+
+      console.warn(
+        `[Agent] No server heartbeat received for ${heartbeatAge}ms; resetting all server connections`,
+      );
+      this.destroyAllServerConnections("server heartbeat missed");
+    }, CONTROL_HEARTBEAT_TIMEOUT_MS + 250);
+  }
+
+  private cleanupServerHeartbeatTimeout(): void {
+    if (this.serverHeartbeatTimeout) {
+      clearTimeout(this.serverHeartbeatTimeout);
+      this.serverHeartbeatTimeout = null;
     }
   }
 
@@ -407,6 +443,10 @@ export class Agent {
   private destroyAllServerConnections(reason: string): void {
     this.poolEnabled = false;
     this.activePoolConnections = 0;
+    this.controlAuthenticated = false;
+    this.cleanupHeartbeat();
+    this.cleanupControlWatchdog();
+    this.cleanupServerHeartbeatTimeout();
 
     const sockets = Array.from(this.serverConnections);
     if (sockets.length === 0) {
