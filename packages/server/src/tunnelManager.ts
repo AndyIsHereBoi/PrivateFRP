@@ -3,9 +3,11 @@ import dgram from "dgram";
 import type { TunnelConfig } from "@privatefrp/shared";
 import { encodeFrame, MsgType, FrameDecoder } from "@privatefrp/shared";
 import type { AgentManager } from "./agentManager";
+import type { DB } from "./db";
 
-/** Idle timeout for UDP sessions — matches typical NAT mapping lifetime */
+/** Idle timeout for UDP sessions - matches typical NAT mapping lifetime */
 const UDP_SESSION_IDLE_MS = 90_000; // 90 seconds
+const TRAFFIC_FLUSH_INTERVAL_MS = 5_000;
 
 /**
  * Returns true for errors that are expected when an agent goes offline
@@ -41,14 +43,83 @@ interface UdpListener {
   sessions: Map<string, UdpSession>;
 }
 
+interface TunnelTrafficState {
+  totalInBytes: number;
+  totalOutBytes: number;
+  lastFlushedInBytes: number;
+  lastFlushedOutBytes: number;
+  dirty: boolean;
+}
+
 type Listener = TcpListener | UdpListener;
 
 export class TunnelManager {
   private listeners: Map<string, Listener> = new Map(); // tunnelId -> Listener
   private agentManager: AgentManager;
+  private db: DB;
+  private trafficByTunnel: Map<string, TunnelTrafficState> = new Map();
+  private trafficFlushInterval: ReturnType<typeof setInterval>;
 
-  constructor(agentManager: AgentManager) {
+  constructor(agentManager: AgentManager, db: DB) {
     this.agentManager = agentManager;
+    this.db = db;
+    this.trafficFlushInterval = setInterval(() => {
+      this.flushTrafficToDb();
+    }, TRAFFIC_FLUSH_INTERVAL_MS);
+  }
+
+  private ensureTrafficState(tunnelId: string): TunnelTrafficState {
+    const existing = this.trafficByTunnel.get(tunnelId);
+    if (existing) return existing;
+
+    const persisted = this.db.getTunnelTrafficTotals(tunnelId);
+    const baselineIn = persisted?.inBytes ?? 0;
+    const baselineOut = persisted?.outBytes ?? 0;
+    const state: TunnelTrafficState = {
+      totalInBytes: baselineIn,
+      totalOutBytes: baselineOut,
+      lastFlushedInBytes: baselineIn,
+      lastFlushedOutBytes: baselineOut,
+      dirty: false,
+    };
+    this.trafficByTunnel.set(tunnelId, state);
+    return state;
+  }
+
+  private addTrafficIn(tunnelId: string, bytes: number): void {
+    if (bytes <= 0) return;
+    const state = this.ensureTrafficState(tunnelId);
+    state.totalInBytes += bytes;
+    state.dirty = true;
+  }
+
+  private addTrafficOut(tunnelId: string, bytes: number): void {
+    if (bytes <= 0) return;
+    const state = this.ensureTrafficState(tunnelId);
+    state.totalOutBytes += bytes;
+    state.dirty = true;
+  }
+
+  private flushTrafficToDb(): void {
+    for (const [tunnelId, state] of this.trafficByTunnel) {
+      if (!state.dirty) continue;
+      if (
+        state.totalInBytes === state.lastFlushedInBytes &&
+        state.totalOutBytes === state.lastFlushedOutBytes
+      ) {
+        state.dirty = false;
+        continue;
+      }
+
+      try {
+        this.db.updateTunnelTrafficTotals(tunnelId, state.totalInBytes, state.totalOutBytes);
+        state.lastFlushedInBytes = state.totalInBytes;
+        state.lastFlushedOutBytes = state.totalOutBytes;
+        state.dirty = false;
+      } catch (err) {
+        console.error(`[TunnelManager] Failed to flush traffic stats for tunnel ${tunnelId}:`, err);
+      }
+    }
   }
 
   /**
@@ -119,12 +190,14 @@ export class TunnelManager {
     );
 
     // Track early client disconnect so we can bail after the async dial and
-    // avoid leaking the data socket.  Also absorb any error that fires before
-    // we have a chance to install a real handler — without this, Node.js would
-    // throw an unhandled 'error' event and crash the process.
+    // avoid leaking the data socket. Also absorb any early errors.
     let clientGone = false;
-    const onEarlyClose = () => { clientGone = true; };
-    const onEarlyError = () => { clientGone = true; };
+    const onEarlyClose = () => {
+      clientGone = true;
+    };
+    const onEarlyError = () => {
+      clientGone = true;
+    };
     clientSocket.once("close", onEarlyClose);
     clientSocket.once("error", onEarlyError);
 
@@ -135,12 +208,9 @@ export class TunnelManager {
         tunnel.id,
       );
 
-      // Remove the temporary handlers before installing the permanent ones.
       clientSocket.removeListener("close", onEarlyClose);
       clientSocket.removeListener("error", onEarlyError);
 
-      // If the client went away while we were dialling, don't leak the data
-      // socket — destroy it immediately and return.
       if (clientGone || clientSocket.destroyed) {
         dataSocket.destroy();
         return;
@@ -156,8 +226,10 @@ export class TunnelManager {
       };
       dataSocket.once("close", releaseConnection);
 
-      // Transparent byte-for-byte pipe between the external client and the
-      // agent's data connection.  No framing or buffering past this point.
+      // Track tunnel traffic while preserving transparent byte forwarding.
+      clientSocket.on("data", (chunk: Buffer) => this.addTrafficIn(tunnel.id, chunk.length));
+      dataSocket.on("data", (chunk: Buffer) => this.addTrafficOut(tunnel.id, chunk.length));
+
       clientSocket.pipe(dataSocket);
       dataSocket.pipe(clientSocket);
 
@@ -242,16 +314,15 @@ export class TunnelManager {
           peerAddr,
         );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msgText = err instanceof Error ? err.message : String(err);
         if (isExpectedDialError(err)) {
-          console.warn(`[TunnelManager] UDP dial skipped for peer ${peerAddr} (${msg})`);
+          console.warn(`[TunnelManager] UDP dial skipped for peer ${peerAddr} (${msgText})`);
         } else {
-          console.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}: ${msg}`);
+          console.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}: ${msgText}`);
         }
         return;
       }
 
-      // Set up idle timer for this session
       const idleTimer = setTimeout(() => {
         console.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
         dataConn.destroy();
@@ -269,7 +340,6 @@ export class TunnelManager {
       };
       dataConn.once("close", releaseSession);
 
-      // Forward UdpData frames from agent back to the external UDP peer
       const decoder = new FrameDecoder();
 
       decoder.onFrame = (frame) => {
@@ -279,7 +349,7 @@ export class TunnelManager {
         const host = body.peerAddr.slice(0, lastColon);
         const port = parseInt(body.peerAddr.slice(lastColon + 1), 10);
         const payload = Buffer.from(body.payload, "base64");
-        // Refresh idle timer on response
+        this.addTrafficOut(tunnel.id, payload.length);
         this.refreshUdpSession(sessions, peerAddr);
         udpSock.send(payload, port, host);
       };
@@ -301,10 +371,9 @@ export class TunnelManager {
       });
     }
 
-    // Refresh idle timer on inbound datagram
     this.refreshUdpSession(sessions, peerAddr);
+    this.addTrafficIn(tunnel.id, msg.length);
 
-    // Forward incoming UDP datagram to agent via UdpData frame
     const frame = encodeFrame(MsgType.UdpData, {
       peerAddr,
       payload: msg.toString("base64"),
@@ -318,29 +387,29 @@ export class TunnelManager {
 
     if (listener.type === "tcp") {
       return new Promise((resolve) => {
-        // Stop accepting new connections; existing ones continue (drain)
         listener.server.close(() => {
           console.log(`[TunnelManager] TCP listener stopped for tunnel ${tunnelId}`);
           resolve();
         });
       });
-    } else {
-      return new Promise((resolve) => {
-        // Close all existing UDP sessions
-        for (const session of listener.sessions.values()) {
-          clearTimeout(session.idleTimer);
-          session.dataConn.destroy();
-        }
-        listener.sessions.clear();
-        listener.socket.close(() => {
-          console.log(`[TunnelManager] UDP listener stopped for tunnel ${tunnelId}`);
-          resolve();
-        });
-      });
     }
+
+    return new Promise((resolve) => {
+      for (const session of listener.sessions.values()) {
+        clearTimeout(session.idleTimer);
+        session.dataConn.destroy();
+      }
+      listener.sessions.clear();
+      listener.socket.close(() => {
+        console.log(`[TunnelManager] UDP listener stopped for tunnel ${tunnelId}`);
+        resolve();
+      });
+    });
   }
 
   async stopAll(): Promise<void> {
+    this.flushTrafficToDb();
+    clearInterval(this.trafficFlushInterval);
     for (const [id, listener] of this.listeners) {
       await this.stopListener(id, listener);
     }

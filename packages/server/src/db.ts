@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
   target_host TEXT NOT NULL,
   target_port INTEGER NOT NULL,
   agent_id TEXT NOT NULL,
+  traffic_in_bytes INTEGER NOT NULL DEFAULT 0,
+  traffic_out_bytes INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER DEFAULT (unixepoch()),
   FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
@@ -39,6 +41,8 @@ export interface TunnelRow {
   target_host: string;
   target_port: number;
   agent_id: string;
+  traffic_in_bytes: number;
+  traffic_out_bytes: number;
   created_at: number;
 }
 
@@ -51,6 +55,22 @@ export class DB {
     this.db = new Database(dbPath);
     this.db.exec("PRAGMA journal_mode=WAL;");
     this.db.exec(SCHEMA);
+    this.applyMigrations();
+  }
+
+  private applyMigrations(): void {
+    type TableInfoRow = { name: string };
+    const columns = this.db
+      .query<TableInfoRow, []>("PRAGMA table_info(tunnels)")
+      .all()
+      .map((c: TableInfoRow) => c.name);
+
+    if (!columns.includes("traffic_in_bytes")) {
+      this.db.exec("ALTER TABLE tunnels ADD COLUMN traffic_in_bytes INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!columns.includes("traffic_out_bytes")) {
+      this.db.exec("ALTER TABLE tunnels ADD COLUMN traffic_out_bytes INTEGER NOT NULL DEFAULT 0;");
+    }
   }
 
   // ─── Agents ──────────────────────────────────────────────────────────────────
@@ -132,6 +152,22 @@ export class DB {
 
   deleteTunnel(id: string): void {
     this.db.query("DELETE FROM tunnels WHERE id = ?").run(id);
+  }
+
+  updateTunnelTrafficTotals(id: string, inBytes: number, outBytes: number): void {
+    this.db
+      .query("UPDATE tunnels SET traffic_in_bytes = ?, traffic_out_bytes = ? WHERE id = ?")
+      .run(inBytes, outBytes, id);
+  }
+
+  getTunnelTrafficTotals(id: string): { inBytes: number; outBytes: number } | null {
+    const row = this.db
+      .query<{ traffic_in_bytes: number; traffic_out_bytes: number }, [string]>(
+        "SELECT traffic_in_bytes, traffic_out_bytes FROM tunnels WHERE id = ?",
+      )
+      .get(id);
+    if (!row) return null;
+    return { inBytes: row.traffic_in_bytes ?? 0, outBytes: row.traffic_out_bytes ?? 0 };
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────

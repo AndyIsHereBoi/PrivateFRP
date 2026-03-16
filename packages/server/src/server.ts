@@ -36,7 +36,7 @@ export class Server {
     this.config = config;
     this.db = db;
     this.agentManager = new AgentManager();
-    this.tunnelManager = new TunnelManager(this.agentManager);
+    this.tunnelManager = new TunnelManager(this.agentManager, this.db);
   }
 
   async start(): Promise<void> {
