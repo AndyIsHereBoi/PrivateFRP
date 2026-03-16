@@ -279,7 +279,7 @@ export function startDashboard(opts: {
 
   Bun.serve({
     port,
-    async fetch(req) {
+    async fetch(req: Request) {
       const url = new URL(req.url);
       const cookie = req.headers.get("cookie");
 
