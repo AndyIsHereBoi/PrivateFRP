@@ -11,6 +11,7 @@ specific implementation choices exist.
 - [Database Structure](#database-structure)
 - [TCP Flow](#tcp-flow)
 - [UDP Flow](#udp-flow)
+- [Config State and EnableDisable Semantics](#config-state-and-enabledisable-semantics)
 - [Why Pre-Warmed Pooling Exists](#why-pre-warmed-pooling-exists)
 - [Why There Is a Brief Handoff Pause](#why-there-is-a-brief-handoff-pause)
 - [Why `setNoDelay(true)` Is Enabled](#why-setnodelaytrue-is-enabled)
@@ -60,6 +61,7 @@ Storage uses a single SQLite file at `data/privatefrp.db` with WAL mode enabled.
 | `id` | `TEXT` | Primary key (agent ID) |
 | `name` | `TEXT` | Human-friendly dashboard label |
 | `secret` | `TEXT` | Agent authentication secret |
+| `enabled` | `INTEGER` | `1` enabled, `0` disabled |
 | `created_at` | `INTEGER` | Unix timestamp default via `unixepoch()` |
 
 ### Table: `tunnels`
@@ -72,19 +74,39 @@ Storage uses a single SQLite file at `data/privatefrp.db` with WAL mode enabled.
 | `listen_port` | `INTEGER` | Public server-side port |
 | `target_host` | `TEXT` | Host on the agent side |
 | `target_port` | `INTEGER` | Port on the agent side |
-| `agent_id` | `TEXT` | Owning agent ID |
+| `agent_id` | `TEXT` | Assigned agent ID (empty string means unassigned) |
+| `enabled` | `INTEGER` | `1` enabled, `0` disabled |
 | `created_at` | `INTEGER` | Unix timestamp default via `unixepoch()` |
 
 ### Relationship
 
 - `tunnels.agent_id` references `agents.id`.
 - One agent can own many tunnels.
-- Deleting an agent in app logic also deletes that agent's tunnels.
+- Deleting an agent in app logic unassigns that agent's tunnels (`agent_id = ''`) instead of deleting them.
 
 ### Runtime behavior
 
 - Tunnel listener state is in memory; DB stores configuration/state snapshots, not live sockets.
 - On tunnel create/update/delete, server reloads listeners from DB and pushes config to connected agents.
+- A tunnel is considered active only when all of these are true:
+  - Tunnel has an assigned agent (`agent_id` is non-empty)
+  - Tunnel `enabled = 1`
+  - Assigned agent `enabled = 1`
+
+## Config State and EnableDisable Semantics
+
+- Agent disable is a routing control, not an authentication block.
+- Disabled agents can still connect and keep a control channel.
+- Disabled agents receive no tunnel config from the server.
+- Disabling an agent does not rewrite per-tunnel enabled flags.
+- Tunnel disable is per-tunnel and independent of assignment.
+- Unassigned tunnels stay in DB/UI but are never activated on server listen ports.
+
+Operationally, this gives a layered model:
+
+- Assignment decides ownership.
+- Tunnel enabled decides whether that tunnel is eligible.
+- Agent enabled decides whether any assigned eligible tunnels can be activated.
 
 ## TCP Flow
 

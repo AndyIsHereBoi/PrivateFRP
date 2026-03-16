@@ -7,14 +7,12 @@ web dashboard.
 ## Table of Contents
 
 - [Highlights](#highlights)
-- [Quick Start (Docker)](#quick-start-docker)
-- [Quick Start (Local Bun)](#quick-start-local-bun)
-- [Using Release Binaries](#using-release-binaries)
+- [Quick Start](#quick-start)
 - [Dashboard Workflow](#dashboard-workflow)
 - [Typical Use Cases](#typical-use-cases)
 - [Notes](#notes)
 - [Backend Documentation](#backend-documentation)
-- [Development](#development)
+- [Run with Docker](#run-with-docker)
 - [License](#license)
 
 ## Highlights
@@ -27,14 +25,63 @@ web dashboard.
 - Pre-warmed connection pool for low-latency new connections
 - Designed for latency-sensitive services (game servers, voice, real-time apps)
 
-## Quick Start (Docker)
+## Quick Start
 
-### 1. Clone the repository
+Choose one install method:
+
+- [Using Release Binaries](#using-release-binaries)
+- [Quick Start (Docker)](#quick-start-docker)
+- [Quick Start (Local Bun)](#quick-start-local-bun)
+
+## Using Release Binaries
+
+The release workflow publishes these assets:
+
+- privatefrp-server-windows-x64.exe
+- privatefrp-agent-windows-x64.exe
+- privatefrp-server-linux-amd64
+- privatefrp-agent-linux-amd64
+
+### 1. Download binaries
+
+- Download one server binary and one agent binary for your platform from Releases.
+
+### 2. Create env files next to the binaries
+
+- Server binary reads server.env
+- Agent binary reads agent.env
+- Copy server.env.example to server.env
+- Copy agent.env.example to agent.env
+
+### 3. Start server, then start agent
+
+Windows (PowerShell):
+
+```powershell
+./privatefrp-server-windows-x64.exe
+./privatefrp-agent-windows-x64.exe
+```
+
+Linux (amd64):
 
 ```bash
-git clone <repo-url>
-cd PrivateFRP
+chmod +x ./privatefrp-server-linux-amd64 ./privatefrp-agent-linux-amd64
+./privatefrp-server-linux-amd64
+./privatefrp-agent-linux-amd64
 ```
+
+### 4. Finish in dashboard
+
+- Open http://<server-ip>:8080
+- Register agent and copy AGENT_ID + AGENT_SECRET
+- Put those values in agent.env and restart agent
+- Create your tunnel
+
+## Quick Start (Docker)
+
+### 1. Download the repository
+
+- Download this repository (zip or clone).
 
 ### 2. Generate TLS certificates
 
@@ -58,7 +105,7 @@ Dashboard: `http://<server-ip>:8080`
 - Click Register Agent
 - Copy AGENT_ID and AGENT_SECRET (secret is shown once)
 
-### 5. Configure and start the agent
+### 4. Configure and start the agent
 
 ```bash
 cp agent.env.example agent.env
@@ -66,7 +113,7 @@ cp agent.env.example agent.env
 bash scripts/start-agent.sh
 ```
 
-### 6. Create a tunnel in the dashboard
+### 5. Create a tunnel in the dashboard
 
 Create a tunnel with:
 
@@ -77,11 +124,9 @@ Create a tunnel with:
 
 ## Quick Start (Local Bun)
 
-### 1. Install dependencies
+### 1. Download the repository and install dependencies
 
 ```bash
-git clone <repo-url>
-cd PrivateFRP
 bun install
 ```
 
@@ -99,81 +144,9 @@ bash scripts/generate-certs.sh
 ### 4. Start server and agent
 
 ```bash
-cd packages/server
-bun run start
-
-cd ../agent
-bun run start
+bun --cwd packages/server run start
+bun --cwd packages/agent run start
 ```
-
-## Using Release Binaries
-
-The release workflow publishes these assets:
-
-- privatefrp-server-windows-x64.exe
-- privatefrp-agent-windows-x64.exe
-- privatefrp-server-linux-amd64
-- privatefrp-agent-linux-amd64
-
-These x64 binaries are compiled with Bun baseline targets for maximum CPU compatibility.
-
-Choose one server binary and one agent binary for your target OS/architecture.
-
-### 1. Download binaries from a GitHub release
-
-- Open the repository Releases page
-- Open the version you want
-- Download the server and agent assets for your platform
-
-### 2. Create env files next to each binary
-
-The binaries use the same env variables as local Bun and Docker runs.
-
-When running compiled binaries, env files are loaded from the binary directory:
-
-- Agent binary reads `agent.env`
-- Server binary reads `server.env`
-
-- Copy server.env.example to server.env
-- Copy agent.env.example to agent.env
-- Fill in values (DASHBOARD_SECRET, SERVER_HOST, AGENT_ID, AGENT_SECRET, etc.)
-
-### 3. Run on Windows (x64)
-
-PowerShell example:
-
-```powershell
-# Server host
-Copy-Item server.env.example server.env
-./privatefrp-server-windows-x64.exe
-
-# Agent host
-Copy-Item agent.env.example agent.env
-./privatefrp-agent-windows-x64.exe
-```
-
-### 4. Run on Linux (amd64)
-
-Bash example:
-
-```bash
-# Server host
-cp server.env.example server.env
-chmod +x ./privatefrp-server-linux-amd64
-./privatefrp-server-linux-amd64
-
-# Agent host
-cp agent.env.example agent.env
-chmod +x ./privatefrp-agent-linux-amd64
-./privatefrp-agent-linux-amd64
-```
-
-### 5. Register agent and create tunnels
-
-- Open dashboard at http://<server-ip>:8080
-- Register agent and copy AGENT_ID and AGENT_SECRET
-- Set those values in agent.env and restart the agent binary
-- Create your TCP/UDP tunnel in the dashboard
 
 ## Dashboard Workflow
 
@@ -203,20 +176,32 @@ For protocol/architecture details and implementation rationale, see:
 
 - [backend.md](backend.md)
 
-## Development
+## Run with Docker
+
+Run these from the repo root.
+
+### Server host
 
 ```bash
-bun run dev:server
-bun run dev:agent
-bun run build:server
-bun run build:agent
- bun run build:binaries
+cp server.env.example server.env
+# edit server.env (set DASHBOARD_SECRET and PUBLIC_IP)
+docker compose -f docker-compose.yml --env-file server.env up -d --build
 ```
 
-Compiled binaries are produced with Bun `--compile` at:
+### Agent host
 
-- `dist/server`
-- `dist/agent`
+```bash
+cp agent.env.example agent.env
+# edit agent.env (set SERVER_HOST, AGENT_ID, AGENT_SECRET)
+docker compose -f docker-compose.agent.yml --env-file agent.env up -d --build
+```
+
+### Stop
+
+```bash
+docker compose -f docker-compose.yml --env-file server.env down
+docker compose -f docker-compose.agent.yml --env-file agent.env down
+```
 
 ## License
 
