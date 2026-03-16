@@ -113,6 +113,23 @@ export class DB {
     return this.getTunnel(id)!;
   }
 
+  updateTunnel(
+    id: string,
+    name: string,
+    type: "tcp" | "udp",
+    listenPort: number,
+    targetHost: string,
+    targetPort: number,
+    agentId: string,
+  ): TunnelRow | null {
+    this.db
+      .query(
+        "UPDATE tunnels SET name = ?, type = ?, listen_port = ?, target_host = ?, target_port = ?, agent_id = ? WHERE id = ?",
+      )
+      .run(name, type, listenPort, targetHost, targetPort, agentId, id);
+    return this.getTunnel(id);
+  }
+
   deleteTunnel(id: string): void {
     this.db.query("DELETE FROM tunnels WHERE id = ?").run(id);
   }
