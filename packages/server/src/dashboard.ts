@@ -456,11 +456,11 @@ function pageShell(opts: {
         <a class="tab ${opts.activeTab === "traffic" ? "active" : ""}" href="/dashboard/traffic">Data Tracking</a>
       </div>
       ${opts.registerAction ? '<a class="tab" href="#" onclick="document.getElementById(\'registerModal\').classList.add(\'open\');return false">Register Agent</a>' : ""}
+    </div>
+    <div class="topbar-right">
       <form method="POST" action="/logout" style="display:inline">
         <button class="btn btn-danger" type="submit">Sign Out</button>
       </form>
-    </div>
-    <div class="topbar-right">
     </div>
   </div>
 </header>
