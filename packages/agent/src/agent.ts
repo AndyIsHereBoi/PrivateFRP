@@ -332,31 +332,16 @@ export class Agent {
     target.once("connect", () => {
       target.setNoDelay(true);
       dataConn.setNoDelay(true);
-      console.log(`[Agent] Target connected (requestId=${requestId}), setting up pipes`);
 
-      const logFirst = (label: string) => {
-        let logged = false;
-        return (chunk: Buffer) => {
-          if (!logged) {
-            logged = true;
-            console.log(`[Agent][${requestId}] ${label} first ${chunk.length}B: ${chunk.slice(0, 256).toString("utf8").replace(/[\r\n]+/g, " ").slice(0, 200)}`);
-          }
-        };
-      };
-
-      const tunnelToTarget = logFirst("tunnel→target");
-      const targetToTunnel = logFirst("target→tunnel");
-
-      dataConn.on("data", tunnelToTarget);
-      target.on("data", targetToTunnel);
-
+      // Transparent byte-for-byte pipe — pipes are established first so the
+      // streams stay in paused/controlled mode until both sides are ready.
       dataConn.pipe(target);
       target.pipe(dataConn);
 
       dataConn.on("error", () => target.destroy());
       target.on("error", () => dataConn.destroy());
-      dataConn.on("close", () => { dataConn.removeListener("data", tunnelToTarget); target.destroy(); });
-      target.on("close", () => { target.removeListener("data", targetToTunnel); dataConn.destroy(); });
+      dataConn.on("close", () => target.destroy());
+      target.on("close", () => dataConn.destroy());
     });
 
     target.on("error", (err) => {
