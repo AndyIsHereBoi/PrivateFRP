@@ -62,7 +62,6 @@ const CSS = `
   }
   .topbar-left { display:flex; align-items:center; gap:1rem; min-width:0; }
   .brand { font-size: 1.15rem; font-weight: 800; color: #38bdf8; letter-spacing: 0.02em; }
-  .page-title { font-size: 0.95rem; color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .topbar-right { display:flex; align-items:center; gap:0.5rem; }
   h1 { font-size: 1.8rem; font-weight: 700; color: #38bdf8; margin-bottom: 0.25rem; }
   h2 { font-size: 1.2rem; font-weight: 600; color: #7dd3fc; margin: 1.5rem 0 0.75rem; }
@@ -71,6 +70,13 @@ const CSS = `
   .tabs { display:flex; gap:0.5rem; margin-bottom: 0; }
   .tab { display:inline-block; padding:0.42rem 0.72rem; border:1px solid #334155; border-radius:8px; color:#93c5fd; text-decoration:none; font-size:0.82rem; }
   .tab.active { background:#1d4ed8; border-color:#2563eb; color:#fff; }
+  .topbar .btn-danger {
+    padding: 0.42rem 0.72rem;
+    font-size: 0.82rem;
+    border: 1px solid #7f1d1d;
+    border-radius: 8px;
+    line-height: 1.2;
+  }
   table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
   th { background: #0f172a; padding: 0.75rem 1rem; text-align: left; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
   td { padding: 0.75rem 1rem; border-top: 1px solid #334155; font-size: 0.9rem; }
@@ -160,7 +166,6 @@ function pageShell(opts: {
   <div class="topbar-inner">
     <div class="topbar-left">
       <div class="brand">PrivateFRP</div>
-      <div class="page-title">${escHtml(opts.subtitle)}${opts.publicIp ? ` - Public IP: ${escHtml(opts.publicIp)}` : ""}</div>
     </div>
     <div class="topbar-right">
       <div class="tabs">
@@ -232,11 +237,11 @@ function trafficPage(
 
   return pageShell({
     title: "PrivateFRP - Data Tracking",
-    subtitle: "Traffic Dashboard",
+    subtitle: "Data Tracking",
     activeTab: "traffic",
     publicIp,
     content: `
-  <h2>Data Tracking</h2>
+  <h1>Data Tracking</h1>
   <table>
     <thead>
       <tr>
@@ -333,12 +338,12 @@ function agentsPage(
 
   return pageShell({
     title: "PrivateFRP - Agents",
-    subtitle: "Agent Dashboard",
+    subtitle: "Agents",
     activeTab: "agents",
     publicIp,
     registerAction: false,
     content: `
-  <h2>Agents</h2>
+  <h1>Agents</h1>
   <table>
     <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>IP Address</th><th>Last Heartbeat</th><th>Actions</th></tr></thead>
     <tbody id="agents-tbody">${agentRows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
@@ -446,10 +451,11 @@ function tunnelsPage(
 
   return pageShell({
     title: "PrivateFRP - Tunnels",
-    subtitle: "Tunnels Dashboard",
+    subtitle: "Tunnels",
     activeTab: "tunnels",
     publicIp,
     content: `
+  <h1>Tunnels</h1>
   <h2>Create Tunnel</h2>
   <div class="card">
     <form id="createTunnelForm" onsubmit="createTunnel(event)">
