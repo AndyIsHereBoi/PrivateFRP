@@ -7,5 +7,8 @@
     "dev:agent": "cd packages/agent && bun run dev",
     "build:server": "cd packages/server && bun run build",
     "build:agent": "cd packages/agent && bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.10"
   }
 }
