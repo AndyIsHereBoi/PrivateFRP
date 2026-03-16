@@ -282,7 +282,7 @@ export class Agent {
         return;
       }
       console.error("[Agent] Control socket error:", err.message);
-      if (!socket.destroyed) socket.destroy();
+      this.destroyAllServerConnections("control socket error");
     });
 
     socket.on("end", () => {
@@ -290,7 +290,7 @@ export class Agent {
         return;
       }
       console.warn("[Agent] Control socket ended by server");
-      if (!socket.destroyed) socket.destroy();
+      this.destroyAllServerConnections("control socket ended");
     });
 
     socket.on("timeout", () => {
