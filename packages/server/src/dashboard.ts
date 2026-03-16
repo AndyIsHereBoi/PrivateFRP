@@ -36,6 +36,28 @@ function normalizeRemoteIp(ip: string | null | undefined): string {
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
 }
 
+function getRequestIp(req: Request): string {
+  const xForwardedFor = req.headers.get("x-forwarded-for");
+  if (xForwardedFor) {
+    const first = xForwardedFor.split(",")[0]?.trim();
+    if (first) return normalizeRemoteIp(first) || "unknown";
+  }
+
+  const xRealIp = req.headers.get("x-real-ip")?.trim();
+  if (xRealIp) return normalizeRemoteIp(xRealIp) || "unknown";
+
+  const cfConnectingIp = req.headers.get("cf-connecting-ip")?.trim();
+  if (cfConnectingIp) return normalizeRemoteIp(cfConnectingIp) || "unknown";
+
+  return "unknown";
+}
+
+function getRequestUserAgent(req: Request): string {
+  const userAgent = req.headers.get("user-agent");
+  if (!userAgent) return "unknown";
+  return userAgent.replace(/\s+/g, " ").trim() || "unknown";
+}
+
 type TrafficTunnelRow = {
   id: string;
   name: string;
@@ -1052,14 +1074,16 @@ export function startDashboard(opts: {
     port,
     async fetch(req: Request) {
       const method = req.method || "GET";
+      const ip = getRequestIp(req);
+      const userAgent = getRequestUserAgent(req);
       const url = parseRequestUrl(req);
       if (!url) {
-        webLog.warn(`[Dashboard] ${method} <invalid-url> -> 400`);
+        webLog.warn(`${method} <invalid-url> ${ip} ${userAgent}`);
         return new Response("Bad Request", { status: 400 });
       }
 
       const cookie = req.headers.get("cookie");
-      webLog.log(`[Dashboard] ${method} ${url.pathname}`);
+      webLog.log(`${method} ${url.pathname} ${ip} ${userAgent}`);
 
       try {
         if (url.pathname === "/login") {
