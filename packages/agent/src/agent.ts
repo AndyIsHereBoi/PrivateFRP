@@ -81,6 +81,9 @@ export class Agent {
   }
 
   start(): void {
+    console.log(
+      `[Agent] Control watchdog enabled: server heartbeat every ${HEARTBEAT_INTERVAL_MS}ms, timeout ${CONTROL_HEARTBEAT_TIMEOUT_MS}ms`,
+    );
     this.startControlHealthMonitor();
     this.connect();
   }
@@ -449,6 +452,9 @@ export class Agent {
     this.cleanupServerHeartbeatTimeout();
 
     const sockets = Array.from(this.serverConnections);
+    console.warn(
+      `[Agent] Resetting ${sockets.length} server connection(s): ${reason}`,
+    );
     if (sockets.length === 0) {
       this.scheduleReconnect(reason);
       return;
