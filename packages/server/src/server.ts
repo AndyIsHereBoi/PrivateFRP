@@ -62,8 +62,9 @@ export class Server {
 
   private async reloadTunnels(): Promise<void> {
     const rows = this.db.listTunnels();
-    const tunnels: TunnelConfig[] = rows.map((r) => this.db.rowToTunnelConfig(r));
-    const assignedTunnels = tunnels.filter((t) => !!t.agentId);
+    const assignedTunnels: TunnelConfig[] = rows
+      .filter((r) => !!r.agent_id && !!r.enabled)
+      .map((r) => this.db.rowToTunnelConfig(r));
     await this.tunnelManager.syncTunnels(assignedTunnels);
 
     // Push updated config to all connected agents

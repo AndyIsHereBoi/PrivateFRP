@@ -855,6 +855,7 @@ function tunnelsPage(
     targetHost: string;
     targetPort: number;
     agentId: string;
+    enabled: boolean;
   }>,
   publicIp: string,
 ): string {
@@ -961,14 +962,20 @@ function renderGroups() {
         const badge = t.type === 'tcp'
           ? '<span class="badge badge-blue">TCP</span>'
           : '<span class="badge badge-purple">UDP</span>';
+        const stateBadge = t.enabled
+          ? '<span class="badge badge-green">Enabled</span>'
+          : '<span class="badge badge-gray">Disabled</span>';
         const publicAddr = PUBLIC_IP ? esc(PUBLIC_IP) + ':' + t.listenPort : t.listenPort;
+        const toggleClass = t.enabled ? 'btn-danger' : 'btn-success';
+        const toggleLabel = t.enabled ? 'Disable' : 'Enable';
         return \`<tr>
           <td>\${esc(t.name)}</td>
-          <td>\${badge}</td>
+          <td>\${badge} \${stateBadge}</td>
           <td><code>\${publicAddr}</code></td>
           <td>\${esc(t.targetHost)}:\${t.targetPort}</td>
           <td>
             <button class="btn btn-edit" onclick="openEditTunnel('\${esc(t.id)}')">Edit</button>
+            <button class="btn \${toggleClass}" onclick="toggleTunnelEnabled('\${esc(t.id)}', \${t.enabled ? 'true' : 'false'})">\${toggleLabel}</button>
             <button class="btn btn-danger" data-tunnel-id="\${esc(t.id)}" data-tunnel-name="\${esc(t.name)}" onclick="deleteTunnel(this.dataset.tunnelId,this.dataset.tunnelName)">Delete</button>
           </td>
         </tr>\`;
@@ -1044,6 +1051,21 @@ async function deleteTunnel(id, name) {
   if (!confirm("Delete tunnel '" + name + "'?")) return;
   const res = await fetch('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
   if (!res.ok) { alert('Failed to delete tunnel'); return; }
+  await refreshData();
+}
+
+async function toggleTunnelEnabled(id, currentlyEnabled) {
+  const nextEnabled = !currentlyEnabled;
+  const res = await fetch('/api/tunnels/' + encodeURIComponent(id) + '/enabled', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: nextEnabled })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Toggle failed' }));
+    alert('Error: ' + (err.error || res.status));
+    return;
+  }
   await refreshData();
 }
 
@@ -1184,6 +1206,7 @@ export function startDashboard(opts: {
           targetHost: t.target_host,
           targetPort: t.target_port,
           agentId: t.agent_id,
+          enabled: !!t.enabled,
         }));
         return html(tunnelsPage(dbAgents, tunnelRows, publicIp));
         }
@@ -1226,7 +1249,12 @@ export function startDashboard(opts: {
         }
 
         if (url.pathname === "/api/tunnels" && req.method === "GET") {
-          return json(db.listTunnels().map((t) => db.rowToTunnelConfig(t)));
+          return json(
+            db.listTunnels().map((t) => ({
+              ...db.rowToTunnelConfig(t),
+              enabled: !!t.enabled,
+            })),
+          );
         }
 
         if (url.pathname === "/api/traffic" && req.method === "GET") {
@@ -1301,6 +1329,28 @@ export function startDashboard(opts: {
         db.deleteTunnel(id);
         await onTunnelsChanged();
         return json({ ok: true });
+        }
+
+        const setTunnelEnabledMatch = req.method === "POST"
+          ? url.pathname.match(/^\/api\/tunnels\/([^/]+)\/enabled$/)
+          : null;
+        if (setTunnelEnabledMatch) {
+          const id = setTunnelEnabledMatch[1];
+          const existing = db.getTunnel(id);
+          if (!existing) return json({ error: "Tunnel not found" }, 404);
+
+          const body = await req.json().catch(() => null) as { enabled?: unknown } | null;
+          if (!body || typeof body.enabled !== "boolean") {
+            return json({ error: "enabled must be boolean" }, 400);
+          }
+
+          const updated = db.setTunnelEnabled(id, body.enabled);
+          await onTunnelsChanged();
+          if (!updated) return json({ error: "Tunnel not found" }, 404);
+          return json({
+            ...db.rowToTunnelConfig(updated),
+            enabled: !!updated.enabled,
+          });
         }
 
         const deleteAgentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/delete$/) ||

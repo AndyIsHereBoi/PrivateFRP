@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tunnels (
   target_host TEXT NOT NULL,
   target_port INTEGER NOT NULL,
   agent_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
   traffic_in_bytes INTEGER NOT NULL DEFAULT 0,
   traffic_out_bytes INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER DEFAULT (unixepoch()),
@@ -68,6 +69,7 @@ export interface TunnelRow {
   target_host: string;
   target_port: number;
   agent_id: string;
+  enabled: number;
   traffic_in_bytes: number;
   traffic_out_bytes: number;
   created_at: number;
@@ -120,6 +122,9 @@ export class DB {
     }
     if (!columns.includes("traffic_out_bytes")) {
       this.db.exec("ALTER TABLE tunnels ADD COLUMN traffic_out_bytes INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!columns.includes("enabled")) {
+      this.db.exec("ALTER TABLE tunnels ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;");
     }
   }
 
@@ -208,6 +213,11 @@ export class DB {
 
   unassignTunnelsForAgent(agentId: string): void {
     this.db.query("UPDATE tunnels SET agent_id = '' WHERE agent_id = ?").run(agentId);
+  }
+
+  setTunnelEnabled(id: string, enabled: boolean): TunnelRow | null {
+    this.db.query("UPDATE tunnels SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
+    return this.getTunnel(id);
   }
 
   updateTunnelTrafficTotals(id: string, inBytes: number, outBytes: number): void {
