@@ -138,7 +138,13 @@ bun run dev:server
 bun run dev:agent
 bun run build:server
 bun run build:agent
+ bun run build:binaries
 ```
+
+Compiled binaries are produced with Bun `--compile` at:
+
+- `dist/server`
+- `dist/agent`
 
 ## License
 
