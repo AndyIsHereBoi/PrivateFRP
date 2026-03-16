@@ -4,6 +4,8 @@ PrivateFRP is a self-hosted reverse tunnel service for exposing local TCP/UDP
 services through a public server, with TLS-encrypted agent links and a simple
 web dashboard.
 
+> **Linux only** — Windows is not supported.
+
 ## Table of Contents
 
 - [Highlights](#highlights)
@@ -108,71 +110,65 @@ bun run start
 
 ## Using Release Binaries
 
-The release workflow publishes these assets:
+The release workflow publishes these Linux (amd64) assets:
 
-- privatefrp-server-windows-x64.exe
-- privatefrp-agent-windows-x64.exe
-- privatefrp-server-linux-amd64
-- privatefrp-agent-linux-amd64
+- `privatefrp-server-linux-amd64` — the server binary
+- `agent` — the agent binary (place in your `PATH`, e.g. `/usr/local/bin/agent`)
 
 These x64 binaries are compiled with Bun baseline targets for maximum CPU compatibility.
-
-Choose one server binary and one agent binary for your target OS/architecture.
 
 ### 1. Download binaries from a GitHub release
 
 - Open the repository Releases page
 - Open the version you want
-- Download the server and agent assets for your platform
+- Download the server and agent assets
 
-### 2. Create env files next to each binary
-
-The binaries use the same env variables as local Bun and Docker runs.
-
-When running compiled binaries, env files are loaded from the binary directory:
-
-- Agent binary reads `agent.env`
-- Server binary reads `server.env`
-
-- Copy server.env.example to server.env
-- Copy agent.env.example to agent.env
-- Fill in values (DASHBOARD_SECRET, SERVER_HOST, AGENT_ID, AGENT_SECRET, etc.)
-
-### 3. Run on Windows (x64)
-
-PowerShell example:
-
-```powershell
-# Server host
-Copy-Item server.env.example server.env
-./privatefrp-server-windows-x64.exe
-
-# Agent host
-Copy-Item agent.env.example agent.env
-./privatefrp-agent-windows-x64.exe
-```
-
-### 4. Run on Linux (amd64)
-
-Bash example:
+### 2. Install and run the server
 
 ```bash
-# Server host
-cp server.env.example server.env
 chmod +x ./privatefrp-server-linux-amd64
+cp server.env.example server.env
+# Edit server.env and set DASHBOARD_SECRET, etc.
 ./privatefrp-server-linux-amd64
-
-# Agent host
-cp agent.env.example agent.env
-chmod +x ./privatefrp-agent-linux-amd64
-./privatefrp-agent-linux-amd64
 ```
 
-### 5. Register agent and create tunnels
+Dashboard: `http://<server-ip>:8080`
 
-- Open dashboard at http://<server-ip>:8080
-- Register agent and copy AGENT_ID and AGENT_SECRET
-- Set those values in agent.env and restart the agent binary
+### 3. Install and run the agent
+
+Place the `agent` binary in your `PATH` so it can be started with a single command:
+
+```bash
+chmod +x ./agent
+sudo mv ./agent /usr/local/bin/agent
+```
+
+Run the agent for the first time to auto-create the configuration file:
+
+```bash
+agent
+```
+
+On the first run, if no configuration file is found, `agent` automatically
+creates a template at `~/.config/privatefrp/agent.env` and exits. Open that
+file, fill in `SERVER_HOST`, `AGENT_ID`, and `AGENT_SECRET`, then run:
+
+```bash
+agent
+```
+
+The agent will read its configuration from (in order of priority):
+
+1. `/etc/privatefrp/agent.env` — system-wide config
+2. `~/.config/privatefrp/agent.env` — per-user config
+3. `agent.env` next to the binary — backward-compatible location
+4. `agent.env` in the current working directory
+
+### 4. Register agent and create tunnels
+
+- Open dashboard at `http://<server-ip>:8080`
+- Register agent and copy `AGENT_ID` and `AGENT_SECRET`
+- Set those values in `~/.config/privatefrp/agent.env` and run `agent`
 - Create your TCP/UDP tunnel in the dashboard
 
 ## Dashboard Workflow
@@ -191,6 +187,7 @@ chmod +x ./privatefrp-agent-linux-amd64
 
 ## Notes
 
+- Windows is not supported.
 - If using self-signed certs, set `TLS_REJECT_UNAUTHORIZED=false` on agents.
 - Ensure tunnel listen ports are exposed in Docker if you run the server in containers.
 - Agent credentials are generated from the dashboard and must match exactly.

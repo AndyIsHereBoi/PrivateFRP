@@ -1,25 +1,50 @@
 import fs from "fs";
 import path from "path";
+import os from "os";
 import { Agent } from "./agent";
 
-function loadEnvFile(fileName: string): void {
+const ENV_TEMPLATE = `# PrivateFRP Agent — environment variables
+# Edit this file and fill in the required values, then run: agent
+
+# Public IP address or hostname of the PrivateFRP server (required)
+SERVER_HOST=your-server-ip
+
+# TLS port the server listens on for agent connections (matches AGENT_PORT on the server)
+SERVER_PORT=7000
+
+# Agent UUID generated from the dashboard (required)
+AGENT_ID=
+
+# Agent secret generated from the dashboard — shown only once (required)
+AGENT_SECRET=
+
+# Set to "false" when the server uses a self-signed TLS certificate (e.g. from generate-certs.sh)
+TLS_REJECT_UNAUTHORIZED=false
+`;
+
+function getConfigCandidates(fileName: string): string[] {
   const candidates: string[] = [];
   const execName = path.basename(process.execPath).toLowerCase();
+  const isCompiled = !execName.startsWith("bun");
 
-  // When compiled, the binary location is where users expect agent.env.
-  if (!execName.startsWith("bun")) {
+  // Standard Linux system-wide config location.
+  candidates.push(path.join("/etc/privatefrp", fileName));
+
+  // Standard Linux per-user config location.
+  candidates.push(path.join(os.homedir(), ".config", "privatefrp", fileName));
+
+  // When compiled, also check next to the binary for backward compat.
+  if (isCompiled) {
     candidates.push(path.join(path.dirname(process.execPath), fileName));
   }
 
-  // Keep cwd fallback for local runs.
+  // CWD fallback for local/dev runs.
   candidates.push(path.join(process.cwd(), fileName));
 
-  const envPath = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!envPath) {
-    return;
-  }
+  return candidates;
+}
 
-  const contents = fs.readFileSync(envPath, "utf8");
+function parseEnvContents(contents: string): void {
   for (const rawLine of contents.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) {
@@ -48,6 +73,48 @@ function loadEnvFile(fileName: string): void {
       process.env[key] = value;
     }
   }
+}
+
+function loadEnvFile(fileName: string): void {
+  const candidates = getConfigCandidates(fileName);
+  const envPath = candidates.find((candidate) => fs.existsSync(candidate));
+
+  if (!envPath) {
+    // Only auto-create config when running as a compiled binary (i.e. installed as `agent`).
+    const execName = path.basename(process.execPath).toLowerCase();
+    if (!execName.startsWith("bun")) {
+      const defaultConfigDir = path.join(os.homedir(), ".config", "privatefrp");
+      const defaultConfigPath = path.join(defaultConfigDir, fileName);
+
+      try {
+        fs.mkdirSync(defaultConfigDir, { recursive: true });
+        fs.writeFileSync(defaultConfigPath, ENV_TEMPLATE, { flag: "wx" });
+        console.log(`[PrivateFRP Agent] No configuration file found.`);
+        console.log(`[PrivateFRP Agent] A template has been created at: ${defaultConfigPath}`);
+        console.log(`[PrivateFRP Agent] Please edit the file and run 'agent' again.`);
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "EEXIST") {
+          // File was created between our existence check and the write — just load it now.
+          const contents = fs.readFileSync(defaultConfigPath, "utf8");
+          parseEnvContents(contents);
+          return;
+        }
+        console.log(`[PrivateFRP Agent] No configuration file found.`);
+        if (code === "EACCES" || code === "EPERM") {
+          console.log(`[PrivateFRP Agent] Permission denied writing to: ${defaultConfigPath}`);
+          console.log(`[PrivateFRP Agent] Create the file manually or run with sufficient permissions.`);
+        } else {
+          console.log(`[PrivateFRP Agent] Could not create config at: ${defaultConfigPath} (${code ?? err})`);
+        }
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  const contents = fs.readFileSync(envPath, "utf8");
+  parseEnvContents(contents);
 }
 
 loadEnvFile("agent.env");
