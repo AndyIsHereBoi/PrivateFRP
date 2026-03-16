@@ -199,9 +199,10 @@ export class Server {
 
     const { agentId, agentSecret } = hello;
     const agentRow = this.db.getAgent(agentId);
+    const remoteAddress = socket.remoteAddress ?? "unknown";
 
     if (!agentRow || agentRow.secret !== agentSecret) {
-      tunnelLog.warn(`[Server] Agent auth failed for id=${agentId}`);
+      tunnelLog.warn(`[Server] Agent auth failed for id=${agentId} from ${remoteAddress}`);
       socket.write(
         encodeFrame(MsgType.ServerHello, {
           ok: false,
@@ -227,7 +228,6 @@ export class Server {
       }),
     );
 
-    const remoteAddress = socket.remoteAddress ?? "unknown";
     this.agentManager.register(agentId, socket, tunnels, remoteAddress);
 
     let lastPingTimestamp = 0;
