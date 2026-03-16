@@ -320,14 +320,14 @@ function updateAgentSelect(agents) {
 }
 
 async function deleteAgent(id, name) {
-  if (!confirm('Delete agent \'' + name + '\'? This will also remove all associated tunnels.')) return;
+  if (!confirm("Delete agent '" + name + "'? This will also remove all associated tunnels.")) return;
   const res = await fetch('/api/agents/' + encodeURIComponent(id) + '/delete', { method: 'POST' });
   if (!res.ok) { alert('Failed to delete agent'); return; }
   await refreshData();
 }
 
 async function deleteTunnel(id, name) {
-  if (!confirm('Delete tunnel \'' + name + '\'?')) return;
+  if (!confirm("Delete tunnel '" + name + "'?")) return;
   const res = await fetch('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
   if (!res.ok) { alert('Failed to delete tunnel'); return; }
   await refreshData();
