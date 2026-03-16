@@ -55,6 +55,7 @@ export class Agent {
   private controlLastRxAt = 0;
   private controlLastHeartbeatAt = 0;
   private controlAuthenticated = false;
+  private heartbeatStaleWarningEmitted = false;
   private serverConnections: Set<tls.TLSSocket> = new Set();
 
   /**
@@ -136,6 +137,7 @@ export class Agent {
     this.controlLastRxAt = this.controlConnectedAt;
     this.controlLastHeartbeatAt = this.controlConnectedAt;
     this.controlAuthenticated = false;
+    this.heartbeatStaleWarningEmitted = false;
     this.trackServerConnection(socket);
 
     const decoder = new FrameDecoder();
@@ -323,6 +325,16 @@ export class Agent {
         return;
       }
 
+      if (
+        heartbeatAge >= CONTROL_HEARTBEAT_TIMEOUT_MS - 5_000 &&
+        !this.heartbeatStaleWarningEmitted
+      ) {
+        this.heartbeatStaleWarningEmitted = true;
+        console.warn(
+          `[Agent] Server heartbeat is stale (${heartbeatAge}ms since last keepalive); waiting before forced reset`,
+        );
+      }
+
       const idleFor = now - this.controlLastRxAt;
       if (idleFor >= CONTROL_IDLE_TIMEOUT_MS) {
         console.warn(
@@ -342,6 +354,7 @@ export class Agent {
 
   private markServerHeartbeatReceived(): void {
     this.controlLastHeartbeatAt = Date.now();
+    this.heartbeatStaleWarningEmitted = false;
     this.armServerHeartbeatTimeout();
   }
 
