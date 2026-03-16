@@ -92,6 +92,7 @@ export class TunnelManager {
       const server = net.createServer({ allowHalfOpen: false });
 
       server.on("connection", (clientSocket) => {
+        clientSocket.setNoDelay(true);
         this.handleTcpConnection(tunnel, clientSocket);
       });
 
@@ -145,14 +146,32 @@ export class TunnelManager {
         return;
       }
 
+      dataSocket.setNoDelay(true);
+
       // Pipe the client and agent data connection together
+      const logFirst = (label: string) => {
+        let logged = false;
+        return (chunk: Buffer) => {
+          if (!logged) {
+            logged = true;
+            console.log(`[TunnelManager][${requestId}] ${label} first ${chunk.length}B: ${chunk.slice(0, 256).toString("utf8").replace(/[\r\n]+/g, " ").slice(0, 200)}`);
+          }
+        };
+      };
+
+      const clientToData = logFirst("client→data");
+      const dataToClient = logFirst("data→client");
+
+      clientSocket.on("data", clientToData);
+      dataSocket.on("data", dataToClient);
+
       clientSocket.pipe(dataSocket);
       dataSocket.pipe(clientSocket);
 
       clientSocket.on("error", () => dataSocket.destroy());
       dataSocket.on("error", () => clientSocket.destroy());
-      clientSocket.on("close", () => dataSocket.destroy());
-      dataSocket.on("close", () => clientSocket.destroy());
+      clientSocket.on("close", () => { clientSocket.removeListener("data", clientToData); dataSocket.destroy(); });
+      dataSocket.on("close", () => { dataSocket.removeListener("data", dataToClient); clientSocket.destroy(); });
     } catch (err) {
       clientSocket.removeListener("close", onEarlyClose);
       clientSocket.removeListener("error", onEarlyError);
