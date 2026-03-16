@@ -121,22 +121,15 @@ export class Server {
         // handleControlConnection just swaps decoder.onFrame for subsequent frames.
         this.handleControlConnection(socket, decoder, frame.body as AgentHelloBody);
       } else if (frame.msgType === MsgType.DataConnHello) {
-        // Stop the classification decoder and remove its listener before handing
-        // the socket off as a raw data pipe. Without this, tunnel response data
-        // (e.g. "HTTP/1.1 200 OK...") would be fed back through the decoder and
-        // trigger a spurious "Invalid frame length" error.
         const leftover = decoder.detach();
         socket.removeListener("data", onData);
-        // Re-inject any bytes that arrived in the same segment as DataConnHello
-        // so that the pipe picks them up as the first data.
+        socket.pause();
         if (leftover.length > 0) socket.unshift(leftover);
         this.handleDataConnection(socket, frame.body as DataConnHelloBody);
       } else if (frame.msgType === MsgType.PoolHello) {
-        // Pre-warmed pool connection from the agent — hand off to the pool.
-        // Switch to raw mode exactly as with DataConnHello; the socket will
-        // be written to directly when a client connects (DialAssign + pipe).
         const leftover = decoder.detach();
         socket.removeListener("data", onData);
+        socket.pause();
         if (leftover.length > 0) socket.unshift(leftover);
         const body = frame.body as PoolHelloBody;
         this.agentManager.addToPool(body.agentId, socket);

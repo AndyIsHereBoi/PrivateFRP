@@ -291,6 +291,10 @@ export class Agent {
         // Switch from framed mode to raw pipe mode
         const leftover = decoder.detach();
         conn.removeListener("data", onData);
+        // Pause immediately — removing the listener does NOT stop the stream
+        // from flowing. Any bytes arriving before pipe() is called would be
+        // silently dropped if we don't pause here.
+        conn.pause();
         if (leftover.length > 0) conn.unshift(leftover);
 
         // Remove the 'close' release listener — we own this socket now
