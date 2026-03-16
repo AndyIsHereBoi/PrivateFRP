@@ -22,6 +22,7 @@ export interface ServerConfig {
   tlsKey: string;
   dashboardSecret: string; // "user:pass"
   dataDir: string;
+  publicIp: string;
 }
 
 export class Server {
@@ -52,6 +53,7 @@ export class Server {
       credentials: { user: dashUser, pass: dashPass },
       db: this.db,
       agentManager: this.agentManager,
+      publicIp: this.config.publicIp,
       onTunnelsChanged: () => this.reloadTunnels(),
     });
   }
