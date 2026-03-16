@@ -188,13 +188,19 @@ function agentsPage(
     subtitle: "Agent Dashboard",
     activeTab: "agents",
     publicIp,
-    registerAction: true,
+    registerAction: false,
     content: `
   <h2>Agents</h2>
   <table>
     <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>IP Address</th><th>Last Heartbeat</th><th>Actions</th></tr></thead>
     <tbody id="agents-tbody">${agentRows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
   </table>
+
+  <div class="card">
+    <h3 style="margin-top:0">Register Agent</h3>
+    <p style="color:#94a3b8;font-size:0.9rem;margin-bottom:1rem">Create a new agent credential pair for a machine you want to connect.</p>
+    <button class="btn btn-primary" onclick="document.getElementById('registerModal').classList.add('open')">Register New Agent</button>
+  </div>
 
   <div class="modal-bg" id="registerModal" onclick="if(event.target===this)this.classList.remove('open')">
     <div class="modal">
@@ -236,12 +242,12 @@ async function refreshAgents() {
       const status = a.connected
         ? '<span class="badge badge-green">Connected</span>'
         : '<span class="badge badge-gray">Offline</span>';
-      const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '';
+      const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '—';
       return \`<tr>
         <td><code style="font-size:0.78rem">\${esc(a.id)}</code></td>
         <td>\${esc(a.name)}</td>
         <td>\${status}</td>
-        <td>\${esc(normalizeIp(a.remoteAddress || '')) || ''}</td>
+        <td>\${esc(normalizeIp(a.remoteAddress || '')) || '—'}</td>
         <td>\${hb}</td>
         <td><button class="btn btn-danger" data-agent-id="\${esc(a.id)}" data-agent-name="\${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button></td>
       </tr>\`;
@@ -267,6 +273,7 @@ async function registerAgent() {
   await refreshAgents();
 }
 
+refreshAgents();
 setInterval(refreshAgents, 10000);
 </script>
 `,
@@ -295,9 +302,6 @@ function tunnelsPage(
     activeTab: "tunnels",
     publicIp,
     content: `
-  <h2>All Tunnels</h2>
-  <div id="groups"></div>
-
   <h2>Create Tunnel</h2>
   <div class="card">
     <form id="createTunnelForm" onsubmit="createTunnel(event)">
@@ -317,6 +321,9 @@ function tunnelsPage(
       <button class="btn btn-primary mt-1" type="submit">Create Tunnel</button>
     </form>
   </div>
+
+  <h2>All Tunnels</h2>
+  <div id="groups"></div>
 
   <div class="modal-bg" id="editTunnelModal" onclick="if(event.target===this)this.classList.remove('open')">
     <div class="modal">
@@ -483,8 +490,7 @@ async function refreshData() {
   } catch (_) {}
 }
 
-updateAgentSelects();
-renderGroups();
+refreshData();
 setInterval(refreshData, 10000);
 </script>
 `,
