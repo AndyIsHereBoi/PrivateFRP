@@ -15,6 +15,8 @@ import {
 } from "@privatefrp/shared";
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
+const CONTROL_IDLE_TIMEOUT_MS = 20_000;
+const CONTROL_CONNECT_TIMEOUT_MS = 10_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 
@@ -39,6 +41,7 @@ export class Agent {
   private tunnels: TunnelConfig[] = [];
   private socket: tls.TLSSocket | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private controlWatchdogInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
 
@@ -72,6 +75,7 @@ export class Agent {
   stop(): void {
     this.stopping = true;
     this.poolEnabled = false;
+    this.cleanupControlWatchdog();
     this.socket?.destroy();
   }
 
@@ -91,6 +95,7 @@ export class Agent {
       port: this.config.serverPort,
       rejectUnauthorized: this.config.tlsRejectUnauthorized,
     });
+    socket.setTimeout(CONTROL_CONNECT_TIMEOUT_MS);
 
     this.socket = socket;
 
@@ -110,7 +115,11 @@ export class Agent {
       );
     });
 
-    socket.on("data", (chunk) => decoder.push(chunk));
+    let lastControlRxAt = Date.now();
+    socket.on("data", (chunk) => {
+      lastControlRxAt = Date.now();
+      decoder.push(chunk);
+    });
 
     let authenticated = false;
 
@@ -128,6 +137,7 @@ export class Agent {
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
           this.startHeartbeat(socket);
+          this.startControlWatchdog(socket, () => lastControlRxAt);
           // Start pre-warming connections now that we are authenticated
           this.poolEnabled = true;
           this.maintainPool();
@@ -167,6 +177,7 @@ export class Agent {
     socket.on("close", () => {
       this.poolEnabled = false;
       this.cleanupHeartbeat();
+      this.cleanupControlWatchdog();
       if (!this.stopping) {
         console.log(`[Agent] Disconnected. Reconnecting in ${this.reconnectDelay}ms...`);
         setTimeout(() => {
@@ -178,6 +189,16 @@ export class Agent {
 
     socket.on("error", (err) => {
       console.error("[Agent] Socket error:", err.message);
+      if (!socket.destroyed) socket.destroy();
+    });
+
+    socket.on("end", () => {
+      if (!socket.destroyed) socket.destroy();
+    });
+
+    socket.on("timeout", () => {
+      console.warn("[Agent] Control socket timeout; forcing reconnect");
+      if (!socket.destroyed) socket.destroy();
     });
   }
 
@@ -200,6 +221,33 @@ export class Agent {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+  }
+
+  private startControlWatchdog(
+    socket: tls.TLSSocket,
+    getLastControlRxAt: () => number,
+  ): void {
+    this.cleanupControlWatchdog();
+    this.controlWatchdogInterval = setInterval(() => {
+      if (socket.destroyed) {
+        this.cleanupControlWatchdog();
+        return;
+      }
+      const idleFor = Date.now() - getLastControlRxAt();
+      if (idleFor > CONTROL_IDLE_TIMEOUT_MS) {
+        console.warn(
+          `[Agent] Control channel idle for ${idleFor}ms; forcing reconnect`,
+        );
+        socket.destroy();
+      }
+    }, 2_000);
+  }
+
+  private cleanupControlWatchdog(): void {
+    if (this.controlWatchdogInterval) {
+      clearInterval(this.controlWatchdogInterval);
+      this.controlWatchdogInterval = null;
     }
   }
 
