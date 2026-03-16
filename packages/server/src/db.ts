@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   secret TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER DEFAULT (unixepoch())
 );
 
@@ -58,6 +59,7 @@ export interface AgentRow {
   id: string;
   name: string;
   secret: string;
+  enabled: number;
   created_at: number;
 }
 
@@ -112,6 +114,15 @@ export class DB {
 
   private applyMigrations(): void {
     type TableInfoRow = { name: string };
+    const agentColumns = this.db
+      .query<TableInfoRow, []>("PRAGMA table_info(agents)")
+      .all()
+      .map((c: TableInfoRow) => c.name);
+
+    if (!agentColumns.includes("enabled")) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;");
+    }
+
     const columns = this.db
       .query<TableInfoRow, []>("PRAGMA table_info(tunnels)")
       .all()
@@ -149,6 +160,11 @@ export class DB {
 
   deleteAgent(id: string): void {
     this.db.query("DELETE FROM agents WHERE id = ?").run(id);
+  }
+
+  setAgentEnabled(id: string, enabled: boolean): AgentRow | null {
+    this.db.query("UPDATE agents SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
+    return this.getAgent(id);
   }
 
   // ─── Tunnels ─────────────────────────────────────────────────────────────────

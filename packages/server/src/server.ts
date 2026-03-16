@@ -62,8 +62,14 @@ export class Server {
 
   private async reloadTunnels(): Promise<void> {
     const rows = this.db.listTunnels();
+    const enabledAgentIds = new Set(
+      this.db
+        .listAgents()
+        .filter((a) => !!a.enabled)
+        .map((a) => a.id),
+    );
     const assignedTunnels: TunnelConfig[] = rows
-      .filter((r) => !!r.agent_id && !!r.enabled)
+      .filter((r) => !!r.agent_id && !!r.enabled && enabledAgentIds.has(r.agent_id))
       .map((r) => this.db.rowToTunnelConfig(r));
     await this.tunnelManager.syncTunnels(assignedTunnels);
 
@@ -216,11 +222,26 @@ export class Server {
       return;
     }
 
+    if (!agentRow.enabled) {
+      tunnelLog.warn(`[Server] Disabled agent rejected: id=${agentId} from ${remoteAddress}`);
+      socket.write(
+        encodeFrame(MsgType.ServerHello, {
+          ok: false,
+          message: "Agent is disabled",
+          tunnels: [],
+        }),
+      );
+      socket.end();
+      return;
+    }
+
     tunnelLog.log(`[Server] Agent connected: ${agentId} (${agentRow.name})`);
 
     // Send ServerHello with current tunnel config for this agent
     const tunnelRows = this.db.listTunnelsForAgent(agentId);
-    const tunnels: TunnelConfig[] = tunnelRows.map((r) => this.db.rowToTunnelConfig(r));
+    const tunnels: TunnelConfig[] = tunnelRows
+      .filter((r) => !!r.enabled)
+      .map((r) => this.db.rowToTunnelConfig(r));
 
     socket.write(
       encodeFrame(MsgType.ServerHello, {

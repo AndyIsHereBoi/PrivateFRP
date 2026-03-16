@@ -725,6 +725,7 @@ function agentsPage(
   agents: Array<{
     id: string;
     name: string;
+    enabled: boolean;
     connected: boolean;
     lastHeartbeat: number;
     remoteAddress: string;
@@ -733,7 +734,9 @@ function agentsPage(
 ): string {
   const agentRows = agents
     .map((a) => {
-      const status = a.connected
+      const status = !a.enabled
+        ? `<span class="badge badge-red">Disabled</span>`
+        : a.connected
         ? `<span class="badge badge-green">Connected</span>`
         : `<span class="badge badge-gray">Offline</span>`;
       const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : "";
@@ -743,7 +746,10 @@ function agentsPage(
         <td>${status}</td>
         <td>${escHtml(a.remoteAddress) || ""}</td>
         <td>${hb}</td>
-        <td><button class="btn btn-danger" data-agent-id="${escHtml(a.id)}" data-agent-name="${escHtml(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button></td>
+        <td>
+          <button class="btn ${a.enabled ? "btn-danger" : "btn-success"}" data-agent-id="${escHtml(a.id)}" data-agent-enabled="${a.enabled ? "1" : "0"}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">${a.enabled ? "Disable" : "Enable"}</button>
+          <button class="btn btn-danger" data-agent-id="${escHtml(a.id)}" data-agent-name="${escHtml(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button>
+        </td>
       </tr>`;
     })
     .join("\n");
@@ -804,7 +810,9 @@ async function refreshAgents() {
       return;
     }
     tbody.innerHTML = agents.map(a => {
-      const status = a.connected
+      const status = !a.enabled
+        ? '<span class="badge badge-red">Disabled</span>'
+        : a.connected
         ? '<span class="badge badge-green">Connected</span>'
         : '<span class="badge badge-gray">Offline</span>';
       const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '—';
@@ -814,14 +822,31 @@ async function refreshAgents() {
         <td>\${status}</td>
         <td>\${esc(normalizeIp(a.remoteAddress || '')) || '—'}</td>
         <td>\${hb}</td>
-        <td><button class="btn btn-danger" data-agent-id="\${esc(a.id)}" data-agent-name="\${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button></td>
+        <td>
+          <button class="btn \${a.enabled ? 'btn-danger' : 'btn-success'}" data-agent-id="\${esc(a.id)}" data-agent-enabled="\${a.enabled ? '1' : '0'}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">\${a.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="btn btn-danger" data-agent-id="\${esc(a.id)}" data-agent-name="\${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button>
+        </td>
       </tr>\`;
     }).join('');
   } catch (_) {}
 }
 
+async function toggleAgentEnabled(id, enabledFlag) {
+  const currentlyEnabled = enabledFlag === '1';
+  const res = await fetch('/api/agents/' + encodeURIComponent(id) + '/enabled', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: !currentlyEnabled }),
+  });
+  if (!res.ok) {
+    alert('Failed to update agent state');
+    return;
+  }
+  await refreshAgents();
+}
+
 async function deleteAgent(id, name) {
-  if (!confirm("Delete agent '" + name + "'? This will also remove all associated tunnels.")) return;
+  if (!confirm("Delete agent '" + name + "'? This will unassign its tunnels.")) return;
   const res = await fetch('/api/agents/' + encodeURIComponent(id) + '/delete', { method: 'POST' });
   if (!res.ok) { alert('Failed to delete agent'); return; }
   await refreshAgents();
@@ -1188,7 +1213,8 @@ export function startDashboard(opts: {
           return {
             id: a.id,
             name: a.name,
-            connected: !!connected,
+            enabled: !!a.enabled,
+            connected: !!connected && !!a.enabled,
             lastHeartbeat: connected?.lastHeartbeat ?? 0,
             remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? ""),
           };
@@ -1231,13 +1257,42 @@ export function startDashboard(opts: {
             return {
               id: a.id,
               name: a.name,
-              connected: !!connected,
+              enabled: !!a.enabled,
+              connected: !!connected && !!a.enabled,
               remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? null),
               lastHeartbeat: connected?.lastHeartbeat ?? null,
               createdAt: a.created_at,
             };
           }),
         );
+        }
+
+        const setAgentEnabledMatch = req.method === "POST"
+          ? url.pathname.match(/^\/api\/agents\/([^/]+)\/enabled$/)
+          : null;
+        if (setAgentEnabledMatch) {
+          const id = setAgentEnabledMatch[1];
+          const existing = db.getAgent(id);
+          if (!existing) return json({ error: "Agent not found" }, 404);
+
+          const body = await req.json().catch(() => null) as { enabled?: unknown } | null;
+          if (!body || typeof body.enabled !== "boolean") {
+            return json({ error: "enabled must be boolean" }, 400);
+          }
+
+          const updated = db.setAgentEnabled(id, body.enabled);
+          if (!updated) return json({ error: "Agent not found" }, 404);
+
+          if (!body.enabled) {
+            agentManager.unregister(id);
+          }
+
+          await onTunnelsChanged();
+          return json({
+            id: updated.id,
+            name: updated.name,
+            enabled: !!updated.enabled,
+          });
         }
 
         if (url.pathname === "/api/agents/register" && (req.method === "GET" || req.method === "POST")) {
