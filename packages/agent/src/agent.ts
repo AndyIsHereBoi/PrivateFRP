@@ -81,9 +81,6 @@ export class Agent {
   }
 
   start(): void {
-    console.log(
-      `[Agent] Control watchdog enabled: server heartbeat every ${HEARTBEAT_INTERVAL_MS}ms, timeout ${CONTROL_HEARTBEAT_TIMEOUT_MS}ms`,
-    );
     this.startControlHealthMonitor();
     this.connect();
   }
@@ -104,7 +101,17 @@ export class Agent {
     this.cleanupReconnectTimer();
 
     // Avoid creating a second control connection while one is still alive.
-    if (this.socket && !this.socket.destroyed) return;
+    if (this.socket && !this.socket.destroyed) {
+      const ageSinceHeartbeat = Date.now() - this.controlLastHeartbeatAt;
+      if (!this.controlAuthenticated || ageSinceHeartbeat > CONTROL_HEARTBEAT_TIMEOUT_MS) {
+        console.warn(
+          `[Agent] Existing control socket is stale (heartbeat age=${ageSinceHeartbeat}ms); forcing close`,
+        );
+        this.socket.destroy();
+      }
+      this.scheduleReconnect("waiting for control socket reset");
+      return;
+    }
 
     // Reset pool state for the new session
     this.poolEnabled = false;
@@ -450,11 +457,10 @@ export class Agent {
     this.cleanupHeartbeat();
     this.cleanupControlWatchdog();
     this.cleanupServerHeartbeatTimeout();
+    this.controlSocketGeneration += 1;
+    this.socket = null;
 
     const sockets = Array.from(this.serverConnections);
-    console.warn(
-      `[Agent] Resetting ${sockets.length} server connection(s): ${reason}`,
-    );
     if (sockets.length === 0) {
       this.scheduleReconnect(reason);
       return;
