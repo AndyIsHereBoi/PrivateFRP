@@ -15,10 +15,6 @@ import {
 } from "@privatefrp/shared";
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
-const CONTROL_STATUS_CHECK_INTERVAL_MS = 5_000;
-const CONTROL_REACHABILITY_PROBE_INTERVAL_MS = 10_000;
-const CONTROL_REACHABILITY_PROBE_TIMEOUT_MS = 3_000;
-const CONTROL_IDLE_TIMEOUT_MS = 20_000;
 const CONTROL_CONNECT_TIMEOUT_MS = 10_000;
 const CONTROL_AUTH_TIMEOUT_MS = 10_000;
 const CONTROL_HEARTBEAT_TIMEOUT_MS = 15_000;
@@ -46,23 +42,10 @@ export class Agent {
   private tunnels: TunnelConfig[] = [];
   private socket: tls.TLSSocket | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-  private controlWatchdogInterval: ReturnType<typeof setInterval> | null = null;
-  private controlHealthInterval: ReturnType<typeof setInterval> | null = null;
-  private reconnectPulseInterval: ReturnType<typeof setInterval> | null = null;
-  private serverHeartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
-  private controlRxTimeout: ReturnType<typeof setTimeout> | null = null;
-  private controlCountdownInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
   private controlSocketGeneration = 0;
-  private controlConnectedAt = 0;
-  private controlLastRxAt = 0;
-  private controlLastHeartbeatAt = 0;
-  private controlAuthenticated = false;
-  private heartbeatStaleWarningEmitted = false;
-  private controlProbeInFlight = false;
-  private lastControlProbeAt = 0;
   private serverConnections: Set<tls.TLSSocket> = new Set();
 
   /**
@@ -89,25 +72,15 @@ export class Agent {
   }
 
   start(): void {
-    console.log(
-      `[Agent] Control health monitor enabled (check=${CONTROL_STATUS_CHECK_INTERVAL_MS}ms, heartbeat-timeout=${CONTROL_HEARTBEAT_TIMEOUT_MS}ms)`,
-    );
-    this.startControlHealthMonitor();
-    this.startReconnectPulse();
     this.connect();
   }
 
   stop(): void {
     this.stopping = true;
     this.poolEnabled = false;
-    this.cleanupControlWatchdog();
-    this.cleanupControlHealthMonitor();
-    this.cleanupReconnectPulse();
-    this.cleanupServerHeartbeatTimeout();
-    this.cleanupControlRxTimeout();
-    this.cleanupControlCountdown();
+    this.cleanupHeartbeat();
     this.cleanupReconnectTimer();
-    this.socket?.destroy();
+    this.destroyAllServerConnections();
   }
 
   private connect(): void {
@@ -116,17 +89,7 @@ export class Agent {
     this.cleanupReconnectTimer();
 
     // Avoid creating a second control connection while one is still alive.
-    if (this.socket && !this.socket.destroyed) {
-      const ageSinceHeartbeat = Date.now() - this.controlLastHeartbeatAt;
-      if (!this.controlAuthenticated || ageSinceHeartbeat > CONTROL_HEARTBEAT_TIMEOUT_MS) {
-        console.warn(
-          `[Agent] Existing control socket is stale (heartbeat age=${ageSinceHeartbeat}ms); forcing close`,
-        );
-        this.socket.destroy();
-      }
-      this.scheduleReconnect("waiting for control socket reset");
-      return;
-    }
+    if (this.socket && !this.socket.destroyed) return;
 
     // Reset pool state for the new session
     this.poolEnabled = false;
@@ -147,11 +110,6 @@ export class Agent {
     socket.setTimeout(CONTROL_CONNECT_TIMEOUT_MS);
 
     this.socket = socket;
-    this.controlConnectedAt = Date.now();
-    this.controlLastRxAt = this.controlConnectedAt;
-    this.controlLastHeartbeatAt = this.controlConnectedAt;
-    this.controlAuthenticated = false;
-    this.heartbeatStaleWarningEmitted = false;
     this.trackServerConnection(socket);
 
     const decoder = new FrameDecoder();
@@ -174,15 +132,11 @@ export class Agent {
       );
     });
 
-    socket.on("data", (chunk: Buffer) => {
-      if (!this.isActiveControlSocket(socket, generation)) return;
-      this.controlLastRxAt = Date.now();
-      if (this.controlAuthenticated) this.armControlRxTimeout();
-      decoder.push(chunk);
-    });
+    socket.on("data", (chunk: Buffer) => decoder.push(chunk));
 
+    let authenticated = false;
     const authTimeout = setTimeout(() => {
-      if (this.controlAuthenticated || !this.isActiveControlSocket(socket, generation)) return;
+      if (authenticated || !this.isActiveControlSocket(socket, generation)) return;
       console.warn("[Agent] Control auth timed out; forcing reconnect");
       socket.destroy();
     }, CONTROL_AUTH_TIMEOUT_MS);
@@ -200,18 +154,11 @@ export class Agent {
             return;
           }
           console.log("[Agent] Authenticated:", body.message);
-          this.controlAuthenticated = true;
+          authenticated = true;
           socket.setTimeout(CONTROL_HEARTBEAT_TIMEOUT_MS);
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
-          console.log(
-            `[Agent] Control keepalive guard armed (${CONTROL_HEARTBEAT_TIMEOUT_MS}ms timeout)`,
-          );
-          this.markServerHeartbeatReceived();
-          this.armControlRxTimeout();
-          this.startControlCountdown();
           this.startHeartbeat(socket);
-          this.startControlWatchdog(socket, () => this.controlLastRxAt);
           // Start pre-warming connections now that we are authenticated
           this.poolEnabled = true;
           this.maintainPool();
@@ -226,7 +173,6 @@ export class Agent {
         }
 
         case MsgType.Heartbeat:
-          this.markServerHeartbeatReceived();
           // Echo server timestamp so the server can measure RTT.
           socket.write(
             encodeFrame(
@@ -238,14 +184,14 @@ export class Agent {
 
         case MsgType.DialTcp: {
           const body = frame.body as DialTcpBody;
-          if (!this.controlAuthenticated) return;
+          if (!authenticated) return;
           this.handleDialTcp(body);
           break;
         }
 
         case MsgType.DialUdpSession: {
           const body = frame.body as DialUdpSessionBody;
-          if (!this.controlAuthenticated) return;
+          if (!authenticated) return;
           this.handleDialUdpSession(body);
           break;
         }
@@ -261,20 +207,7 @@ export class Agent {
         return;
       }
       console.warn("[Agent] Control socket closed");
-      if (this.socket === socket) {
-        this.socket = null;
-      }
-      this.controlAuthenticated = false;
-      this.poolEnabled = false;
-      this.activePoolConnections = 0;
-      this.cleanupHeartbeat();
-      this.cleanupControlWatchdog();
-      this.cleanupServerHeartbeatTimeout();
-      this.cleanupControlRxTimeout();
-      this.cleanupControlCountdown();
-      if (!this.stopping) {
-        this.scheduleReconnect("control channel closed");
-      }
+      this.handleControlDisconnect("control channel closed");
     });
 
     socket.on("error", (err) => {
@@ -282,7 +215,7 @@ export class Agent {
         return;
       }
       console.error("[Agent] Control socket error:", err.message);
-      this.destroyAllServerConnections("control socket error");
+      this.handleControlDisconnect("control socket error");
     });
 
     socket.on("end", () => {
@@ -290,7 +223,7 @@ export class Agent {
         return;
       }
       console.warn("[Agent] Control socket ended by server");
-      this.destroyAllServerConnections("control socket ended");
+      this.handleControlDisconnect("control socket ended");
     });
 
     socket.on("timeout", () => {
@@ -298,7 +231,7 @@ export class Agent {
         return;
       }
       console.warn("[Agent] Control socket inactivity timeout; resetting all server connections");
-      this.destroyAllServerConnections("control socket timeout");
+      this.handleControlDisconnect("control socket timeout");
     });
   }
 
@@ -306,192 +239,10 @@ export class Agent {
     return this.socket === socket && this.controlSocketGeneration === generation;
   }
 
-  private startControlHealthMonitor(): void {
-    this.cleanupControlHealthMonitor();
-    this.controlHealthInterval = setInterval(() => {
-      if (this.stopping) return;
-
-      const socket = this.socket;
-      if (!socket) {
-        this.scheduleReconnect("control socket missing");
-        return;
-      }
-
-      const readyState = (socket as unknown as { readyState?: string }).readyState;
-      if (socket.destroyed || readyState === "closed") {
-        if (this.socket === socket) {
-          this.socket = null;
-        }
-        this.controlAuthenticated = false;
-        this.poolEnabled = false;
-        this.cleanupHeartbeat();
-        this.cleanupControlWatchdog();
-        this.cleanupServerHeartbeatTimeout();
-        this.cleanupControlRxTimeout();
-        this.cleanupControlCountdown();
-        this.scheduleReconnect("control socket inactive");
-        return;
-      }
-
-      const now = Date.now();
-      if (!this.controlAuthenticated) {
-        if (now - this.controlConnectedAt >= CONTROL_AUTH_TIMEOUT_MS) {
-          console.warn("[Agent] Control connection never authenticated; forcing reconnect");
-          this.destroyAllServerConnections("control auth timeout");
-        }
-        return;
-      }
-
-      const heartbeatAge = now - this.controlLastHeartbeatAt;
-      if (heartbeatAge > CONTROL_HEARTBEAT_TIMEOUT_MS) {
-        console.warn(
-          `[Agent] No server heartbeat received for ${heartbeatAge}ms; resetting all server connections`,
-        );
-        this.destroyAllServerConnections("server heartbeat missed");
-        return;
-      }
-
-      if (
-        heartbeatAge >= CONTROL_HEARTBEAT_TIMEOUT_MS - 5_000 &&
-        !this.heartbeatStaleWarningEmitted
-      ) {
-        this.heartbeatStaleWarningEmitted = true;
-        console.warn(
-          `[Agent] Server heartbeat is stale (${heartbeatAge}ms since last keepalive); waiting before forced reset`,
-        );
-      }
-
-      const idleFor = now - this.controlLastRxAt;
-      if (idleFor >= CONTROL_IDLE_TIMEOUT_MS) {
-        console.warn(
-          `[Agent] Control connection inactive for ${idleFor}ms; resetting all server connections`,
-        );
-        this.destroyAllServerConnections("control connection inactive");
-        return;
-      }
-
-      if (
-        !this.controlProbeInFlight &&
-        now - this.lastControlProbeAt >= CONTROL_REACHABILITY_PROBE_INTERVAL_MS
-      ) {
-        this.lastControlProbeAt = now;
-        this.controlProbeInFlight = true;
-        this.probeServerReachability()
-          .then((reachable) => {
-            if (!reachable && this.controlAuthenticated && !this.stopping) {
-              console.warn(
-                "[Agent] Server reachability probe failed; resetting all server connections",
-              );
-              this.destroyAllServerConnections("server reachability probe failed");
-            }
-          })
-          .finally(() => {
-            this.controlProbeInFlight = false;
-          });
-      }
-    }, CONTROL_STATUS_CHECK_INTERVAL_MS);
-  }
-
-  private cleanupControlHealthMonitor(): void {
-    if (this.controlHealthInterval) {
-      clearInterval(this.controlHealthInterval);
-      this.controlHealthInterval = null;
-    }
-  }
-
-  private startReconnectPulse(): void {
-    this.cleanupReconnectPulse();
-    this.reconnectPulseInterval = setInterval(() => {
-      if (this.stopping || this.controlAuthenticated) return;
-
-      if (this.socket && !this.socket.destroyed) {
-        // Force progress if we are stuck with a non-authenticated stale socket.
-        this.socket.destroy();
-        return;
-      }
-
-      this.scheduleReconnect("reconnect pulse");
-    }, 2_000);
-  }
-
-  private cleanupReconnectPulse(): void {
-    if (this.reconnectPulseInterval) {
-      clearInterval(this.reconnectPulseInterval);
-      this.reconnectPulseInterval = null;
-    }
-  }
-
-  private markServerHeartbeatReceived(): void {
-    this.controlLastHeartbeatAt = Date.now();
-    this.heartbeatStaleWarningEmitted = false;
-    this.armServerHeartbeatTimeout();
-  }
-
-  private armServerHeartbeatTimeout(): void {
-    this.cleanupServerHeartbeatTimeout();
-    if (this.stopping || !this.controlAuthenticated) return;
-
-    this.serverHeartbeatTimeout = setTimeout(() => {
-      if (this.stopping || !this.controlAuthenticated) return;
-      const heartbeatAge = Date.now() - this.controlLastHeartbeatAt;
-      if (heartbeatAge < CONTROL_HEARTBEAT_TIMEOUT_MS) {
-        this.armServerHeartbeatTimeout();
-        return;
-      }
-
-      console.warn(
-        `[Agent] No server heartbeat received for ${heartbeatAge}ms; resetting all server connections`,
-      );
-      this.destroyAllServerConnections("server heartbeat missed");
-    }, CONTROL_HEARTBEAT_TIMEOUT_MS + 250);
-  }
-
-  private cleanupServerHeartbeatTimeout(): void {
-    if (this.serverHeartbeatTimeout) {
-      clearTimeout(this.serverHeartbeatTimeout);
-      this.serverHeartbeatTimeout = null;
-    }
-  }
-
-  private armControlRxTimeout(): void {
-    this.cleanupControlRxTimeout();
-    if (this.stopping || !this.controlAuthenticated) return;
-
-    this.controlRxTimeout = setTimeout(() => {
-      if (this.stopping || !this.controlAuthenticated) return;
-      const idleFor = Date.now() - this.controlLastRxAt;
-      console.warn(
-        `[Agent] Control TCP inactivity timeout (${idleFor}ms without server data); resetting all server connections`,
-      );
-      this.destroyAllServerConnections("control tcp inactivity timeout");
-    }, CONTROL_HEARTBEAT_TIMEOUT_MS);
-  }
-
-  private cleanupControlRxTimeout(): void {
-    if (this.controlRxTimeout) {
-      clearTimeout(this.controlRxTimeout);
-      this.controlRxTimeout = null;
-    }
-  }
-
-  private startControlCountdown(): void {
-    this.cleanupControlCountdown();
-    this.controlCountdownInterval = setInterval(() => {
-      if (!this.controlAuthenticated || this.stopping) return;
-      const elapsed = Date.now() - this.controlLastRxAt;
-      const remainingMs = Math.max(0, CONTROL_HEARTBEAT_TIMEOUT_MS - elapsed);
-      const remainingSec = Math.ceil(remainingMs / 1000);
-      console.log(
-        `[Agent] Control timeout countdown: ${remainingSec}s remaining before reset`,
-      );
-    }, 1_000);
-  }
-
-  private cleanupControlCountdown(): void {
-    if (this.controlCountdownInterval) {
-      clearInterval(this.controlCountdownInterval);
-      this.controlCountdownInterval = null;
-    }
+  private handleControlDisconnect(reason: string): void {
+    if (this.stopping) return;
+    this.destroyAllServerConnections();
+    this.scheduleReconnect(reason);
   }
 
   private startHeartbeat(socket: tls.TLSSocket): void {
@@ -516,39 +267,9 @@ export class Agent {
     }
   }
 
-  private startControlWatchdog(
-    socket: tls.TLSSocket,
-    getLastControlRxAt: () => number,
-  ): void {
-    this.cleanupControlWatchdog();
-    this.controlWatchdogInterval = setInterval(() => {
-      if (socket.destroyed) {
-        this.cleanupControlWatchdog();
-        return;
-      }
-      const idleFor = Date.now() - getLastControlRxAt();
-      if (idleFor > CONTROL_IDLE_TIMEOUT_MS) {
-        console.warn(
-          `[Agent] Control channel idle for ${idleFor}ms; forcing reconnect`,
-        );
-        socket.destroy();
-      }
-    }, 2_000);
-  }
-
-  private cleanupControlWatchdog(): void {
-    if (this.controlWatchdogInterval) {
-      clearInterval(this.controlWatchdogInterval);
-      this.controlWatchdogInterval = null;
-    }
-  }
-
   private scheduleReconnect(reason: string): void {
     if (this.stopping) return;
-    if (this.reconnectTimer) {
-      console.log(`[Agent] Reconnect already scheduled; reason=${reason}`);
-      return;
-    }
+    if (this.reconnectTimer) return;
 
     const delay = this.reconnectDelay;
     console.log(`[Agent] ${reason}. Reconnecting in ${delay}ms...`);
@@ -576,59 +297,17 @@ export class Agent {
     });
   }
 
-  private destroyAllServerConnections(reason: string): void {
+  private destroyAllServerConnections(): void {
     this.poolEnabled = false;
     this.activePoolConnections = 0;
-    this.controlAuthenticated = false;
     this.cleanupHeartbeat();
-    this.cleanupControlWatchdog();
-    this.cleanupServerHeartbeatTimeout();
-    this.cleanupControlRxTimeout();
-    this.cleanupControlCountdown();
-    this.controlSocketGeneration += 1;
-    this.socket = null;
 
     const sockets = Array.from(this.serverConnections);
-    console.warn(
-      `[Agent] Destroying ${sockets.length} server connection(s) (${reason})`,
-    );
-    if (sockets.length === 0) {
-      this.scheduleReconnect(reason);
-      return;
-    }
+    this.socket = null;
 
     for (const conn of sockets) {
       if (!conn.destroyed) conn.destroy();
     }
-
-    this.scheduleReconnect(reason);
-  }
-
-  private probeServerReachability(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const probe = tls.connect({
-        host: this.config.serverHost,
-        port: this.config.serverPort,
-        rejectUnauthorized: this.config.tlsRejectUnauthorized,
-      });
-
-      let done = false;
-      const finish = (ok: boolean) => {
-        if (done) return;
-        done = true;
-        if (!probe.destroyed) probe.destroy();
-        resolve(ok);
-      };
-
-      probe.setTimeout(CONTROL_REACHABILITY_PROBE_TIMEOUT_MS);
-      probe.once("secureConnect", () => finish(true));
-      probe.once("error", () => finish(false));
-      probe.once("timeout", () => finish(false));
-      probe.once("close", () => {
-        // If the socket closed before secureConnect, treat probe as failed.
-        if (!done) finish(false);
-      });
-    });
   }
 
   private findTunnel(tunnelId: string): TunnelConfig | undefined {
