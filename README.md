@@ -110,12 +110,12 @@ bun run start
 
 The release workflow publishes these assets:
 
-- privatefrp-server-windows-x64-baseline.exe
-- privatefrp-agent-windows-x64-baseline.exe
-- privatefrp-server-linux-amd64-baseline
-- privatefrp-agent-linux-amd64-baseline
-- privatefrp-server-linux-arm64
-- privatefrp-agent-linux-arm64
+- privatefrp-server-windows-x64.exe
+- privatefrp-agent-windows-x64.exe
+- privatefrp-server-linux-amd64
+- privatefrp-agent-linux-amd64
+
+These x64 binaries are compiled with Bun baseline targets for maximum CPU compatibility.
 
 Choose one server binary and one agent binary for your target OS/architecture.
 
@@ -145,30 +145,28 @@ PowerShell example:
 ```powershell
 # Server host
 Copy-Item server.env.example server.env
-./privatefrp-server-windows-x64-baseline.exe
+./privatefrp-server-windows-x64.exe
 
 # Agent host
 Copy-Item agent.env.example agent.env
-./privatefrp-agent-windows-x64-baseline.exe
+./privatefrp-agent-windows-x64.exe
 ```
 
-### 4. Run on Linux (amd64 or arm64)
+### 4. Run on Linux (amd64)
 
 Bash example:
 
 ```bash
 # Server host
 cp server.env.example server.env
-chmod +x ./privatefrp-server-linux-amd64-baseline
-./privatefrp-server-linux-amd64-baseline
+chmod +x ./privatefrp-server-linux-amd64
+./privatefrp-server-linux-amd64
 
 # Agent host
 cp agent.env.example agent.env
-chmod +x ./privatefrp-agent-linux-amd64-baseline
-./privatefrp-agent-linux-amd64-baseline
+chmod +x ./privatefrp-agent-linux-amd64
+./privatefrp-agent-linux-amd64
 ```
-
-For ARM64 hosts, use the arm64 binary names instead.
 
 ### 5. Register agent and create tunnels
 
