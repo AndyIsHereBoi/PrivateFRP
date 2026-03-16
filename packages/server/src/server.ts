@@ -169,6 +169,8 @@ export class Server {
     decoder: FrameDecoder,
     hello: AgentHelloBody,
   ): void {
+    socket.setKeepAlive(true, 5_000);
+
     const { agentId, agentSecret } = hello;
     const agentRow = this.db.getAgent(agentId);
 

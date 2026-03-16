@@ -15,9 +15,11 @@ import {
 } from "@privatefrp/shared";
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
+const CONTROL_STATUS_CHECK_INTERVAL_MS = 5_000;
 const CONTROL_IDLE_TIMEOUT_MS = 20_000;
 const CONTROL_CONNECT_TIMEOUT_MS = 10_000;
 const CONTROL_AUTH_TIMEOUT_MS = 10_000;
+const CONTROL_HEARTBEAT_TIMEOUT_MS = 15_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 
@@ -43,10 +45,16 @@ export class Agent {
   private socket: tls.TLSSocket | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private controlWatchdogInterval: ReturnType<typeof setInterval> | null = null;
+  private controlHealthInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
   private controlSocketGeneration = 0;
+  private controlConnectedAt = 0;
+  private controlLastRxAt = 0;
+  private controlLastHeartbeatAt = 0;
+  private controlAuthenticated = false;
+  private serverConnections: Set<tls.TLSSocket> = new Set();
 
   /**
    * Cached TLS session shared across all data/pool connections.
@@ -72,6 +80,7 @@ export class Agent {
   }
 
   start(): void {
+    this.startControlHealthMonitor();
     this.connect();
   }
 
@@ -79,6 +88,7 @@ export class Agent {
     this.stopping = true;
     this.poolEnabled = false;
     this.cleanupControlWatchdog();
+    this.cleanupControlHealthMonitor();
     this.cleanupReconnectTimer();
     this.socket?.destroy();
   }
@@ -110,6 +120,11 @@ export class Agent {
     socket.setTimeout(CONTROL_CONNECT_TIMEOUT_MS);
 
     this.socket = socket;
+    this.controlConnectedAt = Date.now();
+    this.controlLastRxAt = this.controlConnectedAt;
+    this.controlLastHeartbeatAt = this.controlConnectedAt;
+    this.controlAuthenticated = false;
+    this.trackServerConnection(socket);
 
     const decoder = new FrameDecoder();
     decoder.onError = (err) => {
@@ -131,15 +146,14 @@ export class Agent {
       );
     });
 
-    let lastControlRxAt = Date.now();
     socket.on("data", (chunk: Buffer) => {
-      lastControlRxAt = Date.now();
+      if (!this.isActiveControlSocket(socket, generation)) return;
+      this.controlLastRxAt = Date.now();
       decoder.push(chunk);
     });
 
-    let authenticated = false;
     const authTimeout = setTimeout(() => {
-      if (authenticated || !this.isActiveControlSocket(socket, generation)) return;
+      if (this.controlAuthenticated || !this.isActiveControlSocket(socket, generation)) return;
       console.warn("[Agent] Control auth timed out; forcing reconnect");
       socket.destroy();
     }, CONTROL_AUTH_TIMEOUT_MS);
@@ -157,12 +171,12 @@ export class Agent {
             return;
           }
           console.log("[Agent] Authenticated:", body.message);
-          authenticated = true;
+          this.controlAuthenticated = true;
           socket.setTimeout(0);
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
           this.startHeartbeat(socket);
-          this.startControlWatchdog(socket, () => lastControlRxAt);
+          this.startControlWatchdog(socket, () => this.controlLastRxAt);
           // Start pre-warming connections now that we are authenticated
           this.poolEnabled = true;
           this.maintainPool();
@@ -177,6 +191,7 @@ export class Agent {
         }
 
         case MsgType.Heartbeat:
+          this.controlLastHeartbeatAt = Date.now();
           // Echo server timestamp so the server can measure RTT.
           socket.write(
             encodeFrame(
@@ -188,14 +203,14 @@ export class Agent {
 
         case MsgType.DialTcp: {
           const body = frame.body as DialTcpBody;
-          if (!authenticated) return;
+          if (!this.controlAuthenticated) return;
           this.handleDialTcp(body);
           break;
         }
 
         case MsgType.DialUdpSession: {
           const body = frame.body as DialUdpSessionBody;
-          if (!authenticated) return;
+          if (!this.controlAuthenticated) return;
           this.handleDialUdpSession(body);
           break;
         }
@@ -213,7 +228,9 @@ export class Agent {
       if (this.socket === socket) {
         this.socket = null;
       }
+      this.controlAuthenticated = false;
       this.poolEnabled = false;
+      this.activePoolConnections = 0;
       this.cleanupHeartbeat();
       this.cleanupControlWatchdog();
       if (!this.stopping) {
@@ -247,6 +264,65 @@ export class Agent {
 
   private isActiveControlSocket(socket: tls.TLSSocket, generation: number): boolean {
     return this.socket === socket && this.controlSocketGeneration === generation;
+  }
+
+  private startControlHealthMonitor(): void {
+    this.cleanupControlHealthMonitor();
+    this.controlHealthInterval = setInterval(() => {
+      if (this.stopping) return;
+
+      const socket = this.socket;
+      if (!socket) {
+        this.scheduleReconnect("control socket missing");
+        return;
+      }
+
+      const readyState = (socket as unknown as { readyState?: string }).readyState;
+      if (socket.destroyed || readyState === "closed") {
+        if (this.socket === socket) {
+          this.socket = null;
+        }
+        this.controlAuthenticated = false;
+        this.poolEnabled = false;
+        this.cleanupHeartbeat();
+        this.cleanupControlWatchdog();
+        this.scheduleReconnect("control socket inactive");
+        return;
+      }
+
+      const now = Date.now();
+      if (!this.controlAuthenticated) {
+        if (now - this.controlConnectedAt >= CONTROL_AUTH_TIMEOUT_MS) {
+          console.warn("[Agent] Control connection never authenticated; forcing reconnect");
+          this.destroyAllServerConnections("control auth timeout");
+        }
+        return;
+      }
+
+      const heartbeatAge = now - this.controlLastHeartbeatAt;
+      if (heartbeatAge > CONTROL_HEARTBEAT_TIMEOUT_MS) {
+        console.warn(
+          `[Agent] No server heartbeat received for ${heartbeatAge}ms; resetting all server connections`,
+        );
+        this.destroyAllServerConnections("server heartbeat missed");
+        return;
+      }
+
+      const idleFor = now - this.controlLastRxAt;
+      if (idleFor >= CONTROL_IDLE_TIMEOUT_MS) {
+        console.warn(
+          `[Agent] Control connection inactive for ${idleFor}ms; resetting all server connections`,
+        );
+        this.destroyAllServerConnections("control connection inactive");
+      }
+    }, CONTROL_STATUS_CHECK_INTERVAL_MS);
+  }
+
+  private cleanupControlHealthMonitor(): void {
+    if (this.controlHealthInterval) {
+      clearInterval(this.controlHealthInterval);
+      this.controlHealthInterval = null;
+    }
   }
 
   private startHeartbeat(socket: tls.TLSSocket): void {
@@ -318,6 +394,33 @@ export class Agent {
     }
   }
 
+  private trackServerConnection(conn: tls.TLSSocket): void {
+    this.serverConnections.add(conn);
+    conn.once("close", () => {
+      this.serverConnections.delete(conn);
+      if (conn === this.socket) {
+        this.socket = null;
+      }
+    });
+  }
+
+  private destroyAllServerConnections(reason: string): void {
+    this.poolEnabled = false;
+    this.activePoolConnections = 0;
+
+    const sockets = Array.from(this.serverConnections);
+    if (sockets.length === 0) {
+      this.scheduleReconnect(reason);
+      return;
+    }
+
+    for (const conn of sockets) {
+      if (!conn.destroyed) conn.destroy();
+    }
+
+    this.scheduleReconnect(reason);
+  }
+
   private findTunnel(tunnelId: string): TunnelConfig | undefined {
     return this.tunnels.find((t) => t.id === tunnelId);
   }
@@ -353,6 +456,7 @@ export class Agent {
       rejectUnauthorized: this.config.tlsRejectUnauthorized,
       session: this.dataConnSession ?? undefined,
     });
+    this.trackServerConnection(conn);
 
     conn.once("session", (session) => {
       this.dataConnSession = session;
@@ -490,6 +594,7 @@ export class Agent {
       rejectUnauthorized: this.config.tlsRejectUnauthorized,
       session: this.dataConnSession ?? undefined,
     });
+    this.trackServerConnection(dataConn);
 
     dataConn.once("session", (session) => {
       this.dataConnSession = session;
@@ -532,6 +637,7 @@ export class Agent {
         rejectUnauthorized: this.config.tlsRejectUnauthorized,
         session: this.dataConnSession ?? undefined,
       });
+      this.trackServerConnection(dataConn);
 
       dataConn.once("session", (session) => {
         this.dataConnSession = session;
