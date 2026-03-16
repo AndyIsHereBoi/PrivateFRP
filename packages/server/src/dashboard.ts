@@ -36,7 +36,12 @@ function normalizeRemoteIp(ip: string | null | undefined): string {
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
 }
 
-function getRequestIp(req: Request): string {
+function getRequestIp(req: Request, requestIpResolver?: (req: Request) => string | null): string {
+  if (requestIpResolver) {
+    const ip = requestIpResolver(req);
+    if (ip) return normalizeRemoteIp(ip) || "unknown";
+  }
+
   const xForwardedFor = req.headers.get("x-forwarded-for");
   if (xForwardedFor) {
     const first = xForwardedFor.split(",")[0]?.trim();
@@ -1072,9 +1077,12 @@ export function startDashboard(opts: {
 
   Bun.serve({
     port,
-    async fetch(req: Request) {
+    async fetch(req: Request, server: ReturnType<typeof Bun.serve>) {
       const method = req.method || "GET";
-      const ip = getRequestIp(req);
+      const ip = getRequestIp(req, (request) => {
+        const runtimeIp = (server as any)?.requestIP?.(request)?.address as string | undefined;
+        return runtimeIp ?? null;
+      });
       const userAgent = getRequestUserAgent(req);
       const url = parseRequestUrl(req);
       if (!url) {
