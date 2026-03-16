@@ -121,6 +121,7 @@ function dashboardPage(
     agentName: string;
   }>,
   agentSelectOptions: Array<{ id: string; name: string }>,
+  publicIp: string,
 ): string {
   const agentRows = agents
     .map((a) => {
@@ -177,7 +178,7 @@ function dashboardPage(
   <nav>
     <div>
       <h1>PrivateFRP</h1>
-      <p class="subtitle" style="margin-bottom:0">Tunnel Dashboard</p>
+      <p class="subtitle" style="margin-bottom:0">Tunnel Dashboard${publicIp ? ` &mdash; Public IP: <code style="color:#4ade80">${escHtml(publicIp)}</code>` : ""}</p>
     </div>
     <div class="spacer"></div>
     <a href="#" onclick="document.getElementById('registerModal').classList.add('open');return false">Register Agent</a>
@@ -194,7 +195,7 @@ function dashboardPage(
 
   <h2>Tunnels</h2>
   <table>
-    <thead><tr><th>Name</th><th>Type</th><th>Listen Port</th><th>Target</th><th>Agent</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>Type</th><th>Public Port</th><th>Local Service</th><th>Agent</th><th>Actions</th></tr></thead>
     <tbody id="tunnels-tbody">${tunnelRows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
   </table>
 
@@ -209,9 +210,9 @@ function dashboardPage(
             <option value="udp">UDP</option>
           </select>
         </div>
-        <div><label>Listen Port</label><input name="listenPort" type="number" min="1" max="65535" placeholder="8080" required></div>
-        <div><label>Target Host</label><input name="targetHost" placeholder="localhost" required></div>
-        <div><label>Target Port</label><input name="targetPort" type="number" min="1" max="65535" placeholder="3000" required></div>
+        <div><label>Public Port</label><input name="listenPort" type="number" min="1" max="65535" placeholder="8080" required></div>
+        <div><label>Local Service Host</label><input name="targetHost" placeholder="localhost" required></div>
+        <div><label>Local Service Port</label><input name="targetPort" type="number" min="1" max="65535" placeholder="3000" required></div>
         <div><label>Agent ID</label>
           <select name="agentId" id="agentSelect">
             ${agentOptions || '<option value="">No agents</option>'}
@@ -381,9 +382,10 @@ export function startDashboard(opts: {
   credentials: { user: string; pass: string };
   db: DB;
   agentManager: AgentManager;
+  publicIp: string;
   onTunnelsChanged: () => Promise<void>;
 }): void {
-  const { port, credentials, db, agentManager, onTunnelsChanged } = opts;
+  const { port, credentials, db, agentManager, publicIp, onTunnelsChanged } = opts;
 
   Bun.serve({
     port,
@@ -473,7 +475,7 @@ export function startDashboard(opts: {
         }));
 
         const agentSelectOptions = dbAgents.map((a) => ({ id: a.id, name: a.name }));
-        return html(dashboardPage(agentsView, tunnelRows, agentSelectOptions));
+        return html(dashboardPage(agentsView, tunnelRows, agentSelectOptions, publicIp));
       }
 
       // ── API: agents ────────────────────────────────────────────────────────
