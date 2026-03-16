@@ -60,9 +60,9 @@ const CSS = `
     justify-content: space-between;
     gap: 1rem;
   }
-  .topbar-left { display:flex; align-items:center; gap:1rem; min-width:0; }
+  .topbar-left { display:flex; align-items:center; gap:0.65rem; min-width:0; flex-wrap: wrap; }
   .brand { font-size: 1.15rem; font-weight: 800; color: #38bdf8; letter-spacing: 0.02em; }
-  .topbar-right { display:flex; align-items:center; gap:0.5rem; }
+  .topbar-right { display:flex; align-items:center; gap:0.5rem; margin-left:auto; }
   h1 { font-size: 1.8rem; font-weight: 700; color: #38bdf8; margin-bottom: 0.25rem; }
   h2 { font-size: 1.2rem; font-weight: 600; color: #7dd3fc; margin: 1.5rem 0 0.75rem; }
   h3 { font-size: 1rem; font-weight: 600; color: #bfdbfe; margin: 1rem 0 0.5rem; }
@@ -87,12 +87,23 @@ const CSS = `
   .badge-blue { background: #1e3a5f; color: #60a5fa; }
   .badge-purple { background: #3b0764; color: #c084fc; }
   .card { background: #1e293b; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; }
+  .card.compact { padding: 1rem 1.1rem; }
   label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; }
   input, select { width: 100%; padding: 0.5rem 0.75rem; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 0.9rem; margin-bottom: 1rem; }
   input:focus, select:focus { outline: none; border-color: #38bdf8; }
   .form-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
   .form-row > div { display: flex; flex-direction: column; }
   .form-row > div input, .form-row > div select { margin-bottom: 0; }
+  .create-tunnel-grid { display:grid; grid-template-columns: 1.1fr 0.65fr 0.95fr 1.15fr 1fr 1fr; gap:0.75rem; }
+  .create-tunnel-grid > div { display:flex; flex-direction:column; }
+  .create-tunnel-grid > div input, .create-tunnel-grid > div select { margin-bottom:0; }
+  .create-actions { display:flex; justify-content:flex-end; margin-top:0.85rem; }
+  @media (max-width: 1050px) {
+    .create-tunnel-grid { grid-template-columns: repeat(2, minmax(200px, 1fr)); }
+  }
+  @media (max-width: 640px) {
+    .create-tunnel-grid { grid-template-columns: 1fr; }
+  }
   button, .btn { padding: 0.5rem 1.25rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: opacity 0.15s; }
   button:hover, .btn:hover { opacity: 0.85; }
   .btn-primary { background: #0284c7; color: #fff; }
@@ -166,8 +177,6 @@ function pageShell(opts: {
   <div class="topbar-inner">
     <div class="topbar-left">
       <div class="brand">PrivateFRP</div>
-    </div>
-    <div class="topbar-right">
       <div class="tabs">
         <a class="tab ${opts.activeTab === "agents" ? "active" : ""}" href="/dashboard/agents">Agents</a>
         <a class="tab ${opts.activeTab === "tunnels" ? "active" : ""}" href="/dashboard/tunnels">Tunnels</a>
@@ -177,6 +186,8 @@ function pageShell(opts: {
       <form method="POST" action="/logout" style="display:inline">
         <button class="btn btn-danger" type="submit">Sign Out</button>
       </form>
+    </div>
+    <div class="topbar-right">
     </div>
   </div>
 </header>
@@ -456,28 +467,30 @@ function tunnelsPage(
     publicIp,
     content: `
   <h1>Tunnels</h1>
+  <h2>All Tunnels</h2>
+  <div id="groups"></div>
+
   <h2>Create Tunnel</h2>
-  <div class="card">
+  <div class="card compact">
     <form id="createTunnelForm" onsubmit="createTunnel(event)">
-      <div class="form-row">
-        <div><label>Name</label><input name="name" placeholder="my-tunnel" required></div>
+      <div class="create-tunnel-grid">
+        <div><label>Agent</label><select name="agentId" id="agentSelect"></select></div>
         <div><label>Type</label>
           <select name="type">
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
           </select>
         </div>
+        <div><label>Name</label><input name="name" placeholder="my-tunnel" required></div>
         <div><label>Public Port</label><input name="listenPort" type="number" min="1" max="65535" placeholder="8080" required></div>
         <div><label>Local Service Host</label><input name="targetHost" placeholder="localhost" required></div>
         <div><label>Local Service Port</label><input name="targetPort" type="number" min="1" max="65535" placeholder="3000" required></div>
-        <div><label>Agent ID</label><select name="agentId" id="agentSelect"></select></div>
       </div>
-      <button class="btn btn-primary mt-1" type="submit">Create Tunnel</button>
+      <div class="create-actions">
+        <button class="btn btn-primary" type="submit">Create Tunnel</button>
+      </div>
     </form>
   </div>
-
-  <h2>All Tunnels</h2>
-  <div id="groups"></div>
 
   <div class="modal-bg" id="editTunnelModal" onclick="if(event.target===this)this.classList.remove('open')">
     <div class="modal">
