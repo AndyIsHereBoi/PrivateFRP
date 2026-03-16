@@ -1,0 +1,34 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "privatefrp",
+    },
+    "packages/agent": {
+      "name": "@privatefrp/agent",
+      "version": "1.0.0",
+      "dependencies": {
+        "@privatefrp/shared": "workspace:*",
+      },
+    },
+    "packages/server": {
+      "name": "@privatefrp/server",
+      "version": "1.0.0",
+      "dependencies": {
+        "@privatefrp/shared": "workspace:*",
+      },
+    },
+    "packages/shared": {
+      "name": "@privatefrp/shared",
+      "version": "1.0.0",
+    },
+  },
+  "packages": {
+    "@privatefrp/agent": ["@privatefrp/agent@workspace:packages/agent"],
+
+    "@privatefrp/server": ["@privatefrp/server@workspace:packages/server"],
+
+    "@privatefrp/shared": ["@privatefrp/shared@workspace:packages/shared"],
+  }
+}
