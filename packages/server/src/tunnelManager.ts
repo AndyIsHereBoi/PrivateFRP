@@ -7,6 +7,20 @@ import type { AgentManager } from "./agentManager";
 /** Idle timeout for UDP sessions — matches typical NAT mapping lifetime */
 const UDP_SESSION_IDLE_MS = 90_000; // 90 seconds
 
+/**
+ * Returns true for errors that are expected when an agent goes offline
+ * (e.g. "not connected", dial timeout, agent disconnected mid-dial).
+ * These are logged as warnings rather than errors.
+ */
+function isExpectedDialError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes("not connected") ||
+    msg.includes("timeout") ||
+    msg.includes("disconnected")
+  );
+}
+
 interface TcpListener {
   type: "tcp";
   server: net.Server;
@@ -118,7 +132,14 @@ export class TunnelManager {
       clientSocket.on("close", () => dataSocket.destroy());
       dataSocket.on("close", () => clientSocket.destroy());
     } catch (err) {
-      console.error(`[TunnelManager] Dial failed for requestId=${requestId}:`, err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isExpectedDialError(err)) {
+        console.warn(
+          `[TunnelManager] Dial skipped for requestId=${requestId} (${msg})`,
+        );
+      } else {
+        console.error(`[TunnelManager] Dial failed for requestId=${requestId}: ${msg}`);
+      }
       clientSocket.destroy();
     }
   }
@@ -185,7 +206,12 @@ export class TunnelManager {
           peerAddr,
         );
       } catch (err) {
-        console.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}:`, err);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isExpectedDialError(err)) {
+          console.warn(`[TunnelManager] UDP dial skipped for peer ${peerAddr} (${msg})`);
+        } else {
+          console.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}: ${msg}`);
+        }
         return;
       }
 

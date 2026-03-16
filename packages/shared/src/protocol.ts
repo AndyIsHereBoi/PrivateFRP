@@ -8,10 +8,6 @@ export const MsgType = {
   DialUdpSession: 0x06,
   DataConnHello: 0x07,
   UdpData: 0x08,
-  /** Agent opens a pre-warmed standby data connection for low-latency dispatch */
-  StandbyHello: 0x09,
-  /** Server assigns a standby connection to a specific tunnel request */
-  AssignStandby: 0x0a,
 } as const;
 
 export type MsgTypeValue = (typeof MsgType)[keyof typeof MsgType];
@@ -68,19 +64,6 @@ export interface UdpDataBody {
   payload: string; // base64
 }
 
-export interface StandbyHelloBody {
-  agentId: string;
-}
-
-export interface AssignStandbyBody {
-  requestId: string;
-  tunnelId: string;
-  /** "tcp" or "udp-session" */
-  connType: "tcp" | "udp-session";
-  /** For UDP sessions: the external peer address */
-  peerAddr?: string;
-}
-
 // ─── Frame encoder ────────────────────────────────────────────────────────────
 export function encodeFrame(msgType: number, body: Record<string, unknown>): Buffer {
   const payload = Buffer.from(JSON.stringify(body));
@@ -103,16 +86,45 @@ export interface DecodedFrame {
  */
 export class FrameDecoder {
   private buf: Buffer = Buffer.alloc(0);
+  private stopped = false;
   onFrame: ((frame: DecodedFrame) => void) | null = null;
   onError: ((err: Error) => void) | null = null;
 
   push(chunk: Buffer): void {
+    if (this.stopped) return;
     this.buf = Buffer.concat([this.buf, chunk]);
     this.drain();
   }
 
+  /**
+   * Stop the decoder and return any bytes that were buffered but not yet
+   * emitted as a complete frame.  Call this when transitioning the socket
+   * from framed-protocol mode to raw-stream mode so that leftover bytes
+   * (e.g. the first bytes of raw TCP data that arrived in the same TCP
+   * segment as the final framed message) are not lost or misinterpreted.
+   *
+   * After calling `detach()` the decoder is permanently stopped and must
+   * not be used again.  The `push()` method becomes a no-op once stopped,
+   * so any external reference to this decoder instance is safe to keep but
+   * will have no effect.
+   *
+   * Note: JavaScript's event loop is single-threaded, so callbacks can
+   * never be executing concurrently with `detach()`.  Clearing the callback
+   * references is therefore always safe to do synchronously here.
+   */
+  detach(): Buffer {
+    this.stopped = true;
+    const leftover = this.buf;
+    this.buf = Buffer.alloc(0);
+    this.onFrame = null;
+    this.onError = null;
+    return leftover;
+  }
+
   private drain(): void {
     while (true) {
+      if (this.stopped) break;
+
       // Need at least 4 bytes to read the length header
       if (this.buf.length < 4) break;
 

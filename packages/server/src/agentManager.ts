@@ -20,8 +20,6 @@ export interface ConnectedAgent {
   /** Remote IP of the control connection */
   remoteAddress: string;
   pendingDials: Map<string, PendingDial>;
-  /** Pre-warmed standby data connections (FIFO queue) */
-  standbyPool: Array<net.Socket | tls.TLSSocket>;
 }
 
 export class AgentManager {
@@ -37,8 +35,6 @@ export class AgentManager {
     const existing = this.agents.get(agentId);
     if (existing) {
       existing.socket.destroy();
-      // Drain standby pool
-      for (const s of existing.standbyPool) s.destroy();
       // Reject all pending dials
       for (const dial of existing.pendingDials.values()) {
         clearTimeout(dial.timer);
@@ -54,14 +50,12 @@ export class AgentManager {
       connectedAt: Date.now(),
       remoteAddress,
       pendingDials: new Map(),
-      standbyPool: [],
     });
   }
 
   unregister(agentId: string): void {
     const agent = this.agents.get(agentId);
     if (!agent) return;
-    for (const s of agent.standbyPool) s.destroy();
     for (const dial of agent.pendingDials.values()) {
       clearTimeout(dial.timer);
       dial.reject(new Error("Agent disconnected"));
@@ -88,42 +82,8 @@ export class AgentManager {
   }
 
   /**
-   * Accept a pre-warmed standby socket from the agent's pool.
-   * Returns true if added, false if agent not found.
-   */
-  addStandby(agentId: string, socket: net.Socket | tls.TLSSocket): boolean {
-    const agent = this.agents.get(agentId);
-    if (!agent) return false;
-
-    // Clean up on socket close so we don't leak stale entries
-    socket.once("close", () => {
-      const idx = agent.standbyPool.indexOf(socket);
-      if (idx !== -1) agent.standbyPool.splice(idx, 1);
-    });
-
-    agent.standbyPool.push(socket);
-    return true;
-  }
-
-  /**
-   * Pop a standby socket from the agent's pool, or null if none available.
-   */
-  private popStandby(agentId: string): (net.Socket | tls.TLSSocket) | null {
-    const agent = this.agents.get(agentId);
-    if (!agent) return null;
-    while (agent.standbyPool.length > 0) {
-      const sock = agent.standbyPool.shift()!;
-      if (!sock.destroyed) return sock;
-    }
-    return null;
-  }
-
-  /**
    * Send a DialTcp message to the agent and return a Promise that resolves
    * when the agent opens the corresponding data connection.
-   *
-   * If a pre-warmed standby connection is available, it is used immediately
-   * (zero round-trip latency). Otherwise falls back to the normal DialTcp flow.
    */
   dialTcp(
     agentId: string,
@@ -132,24 +92,6 @@ export class AgentManager {
   ): Promise<net.Socket | tls.TLSSocket> {
     const agent = this.agents.get(agentId);
     if (!agent) return Promise.reject(new Error(`Agent ${agentId} not connected`));
-
-    // Try standby pool first
-    const standby = this.popStandby(agentId);
-    if (standby) {
-      // Assign the standby connection to this dial via AssignStandby
-      try {
-        standby.write(
-          encodeFrame(MsgType.AssignStandby, {
-            requestId,
-            tunnelId,
-            connType: "tcp",
-          }),
-        );
-        return Promise.resolve(standby);
-      } catch {
-        // Standby socket died; fall through to normal dial
-      }
-    }
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -180,24 +122,6 @@ export class AgentManager {
   ): Promise<net.Socket | tls.TLSSocket> {
     const agent = this.agents.get(agentId);
     if (!agent) return Promise.reject(new Error(`Agent ${agentId} not connected`));
-
-    // Try standby pool for UDP sessions too
-    const standby = this.popStandby(agentId);
-    if (standby) {
-      try {
-        standby.write(
-          encodeFrame(MsgType.AssignStandby, {
-            requestId,
-            tunnelId,
-            connType: "udp-session",
-            peerAddr,
-          }),
-        );
-        return Promise.resolve(standby);
-      } catch {
-        // fall through
-      }
-    }
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

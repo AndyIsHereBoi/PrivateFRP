@@ -108,7 +108,6 @@ function dashboardPage(
     connected: boolean;
     lastHeartbeat: number;
     remoteAddress: string;
-    standbyCount: number;
   }>,
   tunnels: Array<{
     id: string;
@@ -131,9 +130,7 @@ function dashboardPage(
       const hb = a.lastHeartbeat
         ? new Date(a.lastHeartbeat).toLocaleString()
         : "—";
-      const standbyInfo = a.connected
-        ? `<span class="badge badge-blue">${a.standbyCount} standby</span>`
-        : "";
+      const standbyInfo = "";
       return `<tr>
         <td><code style="font-size:0.78rem">${escHtml(a.id)}</code></td>
         <td>${escHtml(a.name)}</td>
@@ -151,10 +148,11 @@ function dashboardPage(
         t.type === "tcp"
           ? `<span class="badge badge-blue">TCP</span>`
           : `<span class="badge badge-purple">UDP</span>`;
+      const publicAddr = publicIp ? `${escHtml(publicIp)}:${t.listenPort}` : `${t.listenPort}`;
       return `<tr>
         <td>${escHtml(t.name)}</td>
         <td>${typeBadge}</td>
-        <td>${t.listenPort}</td>
+        <td><code>${publicAddr}</code></td>
         <td>${escHtml(t.targetHost)}:${t.targetPort}</td>
         <td>${escHtml(t.agentName)}</td>
         <td><button class="btn btn-danger" data-tunnel-id="${escHtml(t.id)}" data-tunnel-name="${escHtml(t.name)}" onclick="deleteTunnel(this.dataset.tunnelId,this.dataset.tunnelName)">Delete</button></td>
@@ -244,6 +242,8 @@ function dashboardPage(
 </div>
 
 <script>
+const PUBLIC_IP = ${JSON.stringify(publicIp)};
+
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -275,7 +275,7 @@ function updateAgentsTable(agents) {
     const status = a.connected
       ? '<span class="badge badge-green">Connected</span>'
       : '<span class="badge badge-gray">Offline</span>';
-    const standby = a.connected ? \`<span class="badge badge-blue">\${a.standbyCount} standby</span>\` : '';
+    const standby = '';
     const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '—';
     return \`<tr>
       <td><code style="font-size:0.78rem">\${esc(a.id)}</code></td>
@@ -299,10 +299,11 @@ function updateTunnelsTable(tunnels, nameMap) {
       ? '<span class="badge badge-blue">TCP</span>'
       : '<span class="badge badge-purple">UDP</span>';
     const agentName = nameMap[t.agentId] || t.agentId;
+    const publicAddr = PUBLIC_IP ? esc(PUBLIC_IP) + ':' + t.listenPort : t.listenPort;
     return \`<tr>
       <td>\${esc(t.name)}</td>
       <td>\${badge}</td>
-      <td>\${t.listenPort}</td>
+      <td><code>\${publicAddr}</code></td>
       <td>\${esc(t.targetHost)}:\${t.targetPort}</td>
       <td>\${esc(agentName)}</td>
       <td><button class="btn btn-danger" data-tunnel-id="\${esc(t.id)}" data-tunnel-name="\${esc(t.name)}" onclick="deleteTunnel(this.dataset.tunnelId,this.dataset.tunnelName)">Delete</button></td>
