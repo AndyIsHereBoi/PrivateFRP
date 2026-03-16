@@ -16,6 +16,8 @@ import {
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const CONTROL_STATUS_CHECK_INTERVAL_MS = 5_000;
+const CONTROL_REACHABILITY_PROBE_INTERVAL_MS = 10_000;
+const CONTROL_REACHABILITY_PROBE_TIMEOUT_MS = 3_000;
 const CONTROL_IDLE_TIMEOUT_MS = 20_000;
 const CONTROL_CONNECT_TIMEOUT_MS = 10_000;
 const CONTROL_AUTH_TIMEOUT_MS = 10_000;
@@ -56,6 +58,8 @@ export class Agent {
   private controlLastHeartbeatAt = 0;
   private controlAuthenticated = false;
   private heartbeatStaleWarningEmitted = false;
+  private controlProbeInFlight = false;
+  private lastControlProbeAt = 0;
   private serverConnections: Set<tls.TLSSocket> = new Set();
 
   /**
@@ -347,6 +351,27 @@ export class Agent {
           `[Agent] Control connection inactive for ${idleFor}ms; resetting all server connections`,
         );
         this.destroyAllServerConnections("control connection inactive");
+        return;
+      }
+
+      if (
+        !this.controlProbeInFlight &&
+        now - this.lastControlProbeAt >= CONTROL_REACHABILITY_PROBE_INTERVAL_MS
+      ) {
+        this.lastControlProbeAt = now;
+        this.controlProbeInFlight = true;
+        this.probeServerReachability()
+          .then((reachable) => {
+            if (!reachable && this.controlAuthenticated && !this.stopping) {
+              console.warn(
+                "[Agent] Server reachability probe failed; resetting all server connections",
+              );
+              this.destroyAllServerConnections("server reachability probe failed");
+            }
+          })
+          .finally(() => {
+            this.controlProbeInFlight = false;
+          });
       }
     }, CONTROL_STATUS_CHECK_INTERVAL_MS);
   }
@@ -493,6 +518,33 @@ export class Agent {
     }
 
     this.scheduleReconnect(reason);
+  }
+
+  private probeServerReachability(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const probe = tls.connect({
+        host: this.config.serverHost,
+        port: this.config.serverPort,
+        rejectUnauthorized: this.config.tlsRejectUnauthorized,
+      });
+
+      let done = false;
+      const finish = (ok: boolean) => {
+        if (done) return;
+        done = true;
+        if (!probe.destroyed) probe.destroy();
+        resolve(ok);
+      };
+
+      probe.setTimeout(CONTROL_REACHABILITY_PROBE_TIMEOUT_MS);
+      probe.once("secureConnect", () => finish(true));
+      probe.once("error", () => finish(false));
+      probe.once("timeout", () => finish(false));
+      probe.once("close", () => {
+        // If the socket closed before secureConnect, treat probe as failed.
+        if (!done) finish(false);
+      });
+    });
   }
 
   private findTunnel(tunnelId: string): TunnelConfig | undefined {
