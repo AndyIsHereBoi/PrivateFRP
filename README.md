@@ -32,7 +32,12 @@ bash scripts/generate-certs.sh
 ### 3. Start the server
 
 ```bash
-DASHBOARD_SECRET=admin:changeme docker compose up -d
+# Copy the example env file and customise it
+cp server.env.example server.env
+# Edit server.env — set DASHBOARD_SECRET and optionally PUBLIC_IP
+
+bash scripts/start-server.sh
+# or: docker compose --env-file server.env up -d
 ```
 
 The dashboard is now available at **http://your-server-ip:8080**.
@@ -47,7 +52,8 @@ Copy the `AGENT_ID` and `AGENT_SECRET` — the secret is shown **only once**.
 
 ### 5. Start the agent (Docker)
 
-On the machine whose services you want to expose, create a `.env` file:
+On the machine whose services you want to expose, create an `agent.env` file
+(use `agent.env.example` as a template):
 
 ```bash
 SERVER_HOST=your-server-ip
@@ -60,7 +66,8 @@ TLS_REJECT_UNAUTHORIZED=false   # required for self-signed certs
 Then run:
 
 ```bash
-docker compose -f docker-compose.agent.yml up -d
+bash scripts/start-agent.sh
+# or: docker compose -f docker-compose.agent.yml --env-file agent.env up -d
 ```
 
 ### 6. Create a tunnel
@@ -104,18 +111,19 @@ bash scripts/generate-certs.sh
 
 ### 3. Configure environment variables
 
-**Server** (create `packages/server/.env` or export variables):
+**Server** (copy `server.env.example` to `server.env` at the repo root and edit it):
 
 ```bash
 AGENT_PORT=7000
 DASHBOARD_PORT=8080
-AGENT_TLS_CERT=./certs/server.crt
-AGENT_TLS_KEY=./certs/server.key
+AGENT_TLS_CERT=../../certs/server.crt
+AGENT_TLS_KEY=../../certs/server.key
 DASHBOARD_SECRET=admin:changeme
 DATA_DIR=./data
+PUBLIC_IP=                          # optional: public IP shown in dashboard
 ```
 
-**Agent** (create `packages/agent/.env` or export variables):
+**Agent** (copy `agent.env.example` to `agent.env` at the repo root and edit it):
 
 ```bash
 SERVER_HOST=<your-server-ip>
@@ -274,6 +282,7 @@ bun run build:agent
 | `AGENT_TLS_CERT` | `/app/certs/server.crt` | Path to TLS certificate |
 | `AGENT_TLS_KEY` | `/app/certs/server.key` | Path to TLS private key |
 | `DATA_DIR` | `/app/data` | Directory for the SQLite database |
+| `PUBLIC_IP` | *(empty)* | Public IP shown in dashboard tunnel connection strings |
 
 ### Agent (`docker-compose.agent.yml`)
 
