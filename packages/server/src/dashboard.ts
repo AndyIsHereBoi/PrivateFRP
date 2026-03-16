@@ -102,7 +102,14 @@ function loginPage(error?: string): string {
 }
 
 function dashboardPage(
-  agents: Array<{ id: string; name: string; connected: boolean; lastHeartbeat: number }>,
+  agents: Array<{
+    id: string;
+    name: string;
+    connected: boolean;
+    lastHeartbeat: number;
+    remoteAddress: string;
+    standbyCount: number;
+  }>,
   tunnels: Array<{
     id: string;
     name: string;
@@ -111,8 +118,9 @@ function dashboardPage(
     targetHost: string;
     targetPort: number;
     agentId: string;
+    agentName: string;
   }>,
-  agentIds: string[],
+  agentSelectOptions: Array<{ id: string; name: string }>,
 ): string {
   const agentRows = agents
     .map((a) => {
@@ -122,10 +130,14 @@ function dashboardPage(
       const hb = a.lastHeartbeat
         ? new Date(a.lastHeartbeat).toLocaleString()
         : "—";
+      const standbyInfo = a.connected
+        ? `<span class="badge badge-blue">${a.standbyCount} standby</span>`
+        : "";
       return `<tr>
-        <td><code>${a.id}</code></td>
+        <td><code style="font-size:0.78rem">${escHtml(a.id)}</code></td>
         <td>${escHtml(a.name)}</td>
-        <td>${status}</td>
+        <td>${status} ${standbyInfo}</td>
+        <td>${escHtml(a.remoteAddress) || "—"}</td>
         <td>${hb}</td>
       </tr>`;
     })
@@ -142,16 +154,16 @@ function dashboardPage(
         <td>${typeBadge}</td>
         <td>${t.listenPort}</td>
         <td>${escHtml(t.targetHost)}:${t.targetPort}</td>
-        <td><code>${t.agentId}</code></td>
-        <td><form method="POST" action="/api/tunnels/${t.id}/delete" onsubmit="return confirm('Delete tunnel?')">
+        <td>${escHtml(t.agentName)}</td>
+        <td><form method="POST" action="/api/tunnels/${t.id}/delete" onsubmit="return confirm('Delete tunnel \\'${escHtml(t.name)}\\'?')">
           <button class="btn btn-danger" type="submit">Delete</button>
         </form></td>
       </tr>`;
     })
     .join("\n");
 
-  const agentOptions = agentIds
-    .map((id) => `<option value="${escHtml(id)}">${escHtml(id)}</option>`)
+  const agentOptions = agentSelectOptions
+    .map((a) => `<option value="${escHtml(a.id)}">${escHtml(a.name)} (${escHtml(a.id.slice(0, 8))}…)</option>`)
     .join("\n");
 
   return `<!DOCTYPE html>
@@ -177,8 +189,8 @@ function dashboardPage(
 
   <h2>Agents</h2>
   <table>
-    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Last Heartbeat</th></tr></thead>
-    <tbody>${agentRows || '<tr><td colspan="4" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
+    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>IP Address</th><th>Last Heartbeat</th></tr></thead>
+    <tbody>${agentRows || '<tr><td colspan="5" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
   </table>
 
   <h2>Tunnels</h2>
@@ -216,7 +228,9 @@ function dashboardPage(
 <div class="modal-bg" id="registerModal" onclick="if(event.target===this)this.classList.remove('open')">
   <div class="modal">
     <h2>Register New Agent</h2>
-    <p style="color:#94a3b8;margin:0.5rem 0 1rem;font-size:0.9rem">Click the button below to generate a new agent ID and secret.</p>
+    <p style="color:#94a3b8;margin:0.5rem 0 1rem;font-size:0.9rem">Give your agent a name and click Generate to get its credentials.</p>
+    <label>Agent Name</label>
+    <input id="regName" placeholder="my-home-server" style="margin-bottom:1rem">
     <div id="regResult" style="display:none">
       <label>Agent ID</label><div class="code-block" id="regId"></div>
       <label>Agent Secret</label><div class="code-block" id="regSecret"></div>
@@ -231,12 +245,13 @@ function dashboardPage(
 
 <script>
 async function registerAgent() {
-  const res = await fetch('/api/agents/register', { method: 'POST' });
+  const name = document.getElementById('regName').value.trim();
+  const params = name ? '?name=' + encodeURIComponent(name) : '';
+  const res = await fetch('/api/agents/register' + params, { method: 'POST' });
   const data = await res.json();
   document.getElementById('regId').textContent = data.agentId;
   document.getElementById('regSecret').textContent = data.agentSecret;
   document.getElementById('regResult').style.display = 'block';
-  // Reload page after closing to show new agent in table
 }
 // Auto-refresh every 15 seconds
 setTimeout(() => location.reload(), 15000);
@@ -322,17 +337,21 @@ export function startDashboard(opts: {
       // ── Dashboard page ─────────────────────────────────────────────────────
       if (url.pathname === "/dashboard" && req.method === "GET") {
         const dbAgents = db.listAgents();
-        const connectedIds = new Set(agentManager.getAll().map((a) => a.agentId));
-        const heartbeats = new Map(
-          agentManager.getAll().map((a) => [a.agentId, a.lastHeartbeat]),
-        );
+        const connectedAgents = agentManager.getAll();
+        const connectedMap = new Map(connectedAgents.map((a) => [a.agentId, a]));
+        const agentNameMap = new Map(dbAgents.map((a) => [a.id, a.name]));
 
-        const agentsView = dbAgents.map((a) => ({
-          id: a.id,
-          name: a.name,
-          connected: connectedIds.has(a.id),
-          lastHeartbeat: heartbeats.get(a.id) ?? 0,
-        }));
+        const agentsView = dbAgents.map((a) => {
+          const connected = connectedMap.get(a.id);
+          return {
+            id: a.id,
+            name: a.name,
+            connected: !!connected,
+            lastHeartbeat: connected?.lastHeartbeat ?? 0,
+            remoteAddress: connected?.remoteAddress ?? "",
+            standbyCount: connected?.standbyPool.length ?? 0,
+          };
+        });
 
         const tunnelRows = db.listTunnels().map((t) => ({
           id: t.id,
@@ -342,23 +361,30 @@ export function startDashboard(opts: {
           targetHost: t.target_host,
           targetPort: t.target_port,
           agentId: t.agent_id,
+          agentName: agentNameMap.get(t.agent_id) ?? t.agent_id,
         }));
 
-        const agentIds = dbAgents.map((a) => a.id);
-        return html(dashboardPage(agentsView, tunnelRows, agentIds));
+        const agentSelectOptions = dbAgents.map((a) => ({ id: a.id, name: a.name }));
+        return html(dashboardPage(agentsView, tunnelRows, agentSelectOptions));
       }
 
       // ── API: agents ────────────────────────────────────────────────────────
       if (url.pathname === "/api/agents" && req.method === "GET") {
         const dbAgents = db.listAgents();
-        const connectedIds = new Set(agentManager.getAll().map((a) => a.agentId));
+        const connectedMap = new Map(agentManager.getAll().map((a) => [a.agentId, a]));
         return json(
-          dbAgents.map((a) => ({
-            id: a.id,
-            name: a.name,
-            connected: connectedIds.has(a.id),
-            createdAt: a.created_at,
-          })),
+          dbAgents.map((a) => {
+            const connected = connectedMap.get(a.id);
+            return {
+              id: a.id,
+              name: a.name,
+              connected: !!connected,
+              remoteAddress: connected?.remoteAddress ?? null,
+              standbyCount: connected?.standbyPool.length ?? 0,
+              lastHeartbeat: connected?.lastHeartbeat ?? null,
+              createdAt: a.created_at,
+            };
+          }),
         );
       }
 
@@ -368,8 +394,9 @@ export function startDashboard(opts: {
       ) {
         const agentId = crypto.randomUUID();
         const agentSecret = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-        db.createAgent(agentId, `agent-${agentId.slice(0, 8)}`, agentSecret);
-        return json({ agentId, agentSecret });
+        const agentName = url.searchParams.get("name")?.trim() || `agent-${agentId.slice(0, 8)}`;
+        db.createAgent(agentId, agentName, agentSecret);
+        return json({ agentId, agentName, agentSecret });
       }
 
       // ── API: tunnels ───────────────────────────────────────────────────────

@@ -63,13 +63,15 @@ bun run start
 
 ### 5. Register an agent
 
-Open the dashboard at `http://localhost:8080`, click **Register Agent**, copy the
-generated `AGENT_ID` and `AGENT_SECRET`.
+Open the dashboard at `http://localhost:8080`, click **Register Agent**, enter a
+friendly name (e.g. `home-server`), and click **Generate**. Copy the
+`AGENT_ID` and `AGENT_SECRET` — the secret is shown only once.
 
-Alternatively via API:
+Alternatively via API (append `?name=my-agent` to set the name):
 
 ```bash
-curl -u admin:password http://localhost:8080/api/agents/register
+curl -b 'session=<cookie>' -X POST \
+  "http://localhost:8080/api/agents/register?name=home-server"
 ```
 
 ### 6. Start the agent
@@ -160,6 +162,28 @@ Each frame: `[4-byte big-endian length][1-byte msg type][JSON body]`
 | DialUdpSession | 0x06 | server→agent | Request new UDP session |
 | DataConnHello | 0x07 | agent→server | Identify a data connection |
 | UdpData | 0x08 | both | UDP datagram payload (base64) |
+| StandbyHello | 0x09 | agent→server | Offer a pre-warmed standby connection |
+| AssignStandby | 0x0a | server→agent | Assign a standby connection to a request |
+
+### Connection Pre-Pooling (FRP `pool_count` equivalent)
+
+Inspired by [FRP's pool_count](https://github.com/fatedier/frp), the agent
+pre-opens **5 standby TLS connections** to the server after authentication.
+When an inbound TCP connection arrives, the server immediately uses an available
+standby instead of waiting for a round-trip `DialTcp` → `DataConnHello` exchange.
+
+This eliminates the TLS handshake overhead from the critical path of each new
+connection, which is critical for workloads like Minecraft servers where 20+
+players may connect simultaneously.
+
+After each standby is consumed, the agent automatically opens a replacement to
+keep the pool filled.
+
+### UDP Session Idle Timeout
+
+UDP sessions (per external peer) are automatically cleaned up after **90 seconds**
+of inactivity. This matches typical NAT mapping lifetimes and prevents resource
+leaks from abandoned UDP senders.
 
 ---
 
@@ -176,6 +200,22 @@ bun run dev:agent
 bun run build:server
 bun run build:agent
 ```
+
+---
+
+## Docker
+
+A `docker-compose.yml` and `Dockerfile.server` are included for containerised
+deployment. Add your tunnel ports to `docker-compose.yml` then:
+
+```bash
+# Generate certs first
+bash scripts/generate-certs.sh
+
+DASHBOARD_SECRET=admin:changeme docker compose up -d
+```
+
+The agent still runs as a Bun process on your private machine.
 
 ---
 

@@ -4,18 +4,26 @@ import type { TunnelConfig } from "@privatefrp/shared";
 import { encodeFrame, MsgType, FrameDecoder } from "@privatefrp/shared";
 import type { AgentManager } from "./agentManager";
 
+/** Idle timeout for UDP sessions — matches typical NAT mapping lifetime */
+const UDP_SESSION_IDLE_MS = 90_000; // 90 seconds
+
 interface TcpListener {
   type: "tcp";
   server: net.Server;
   tunnelId: string;
 }
 
+interface UdpSession {
+  dataConn: net.Socket | import("tls").TLSSocket;
+  lastActivity: number;
+  idleTimer: ReturnType<typeof setTimeout>;
+}
+
 interface UdpListener {
   type: "udp";
   socket: dgram.Socket;
   tunnelId: string;
-  // per-peer sessions: peerAddr -> data connection socket
-  sessions: Map<string, net.Socket | import("tls").TLSSocket>;
+  sessions: Map<string, UdpSession>;
 }
 
 type Listener = TcpListener | UdpListener;
@@ -118,7 +126,7 @@ export class TunnelManager {
   private startUdpListener(tunnel: TunnelConfig): Promise<void> {
     return new Promise((resolve, reject) => {
       const sock = dgram.createSocket("udp4");
-      const sessions = new Map<string, net.Socket | import("tls").TLSSocket>();
+      const sessions = new Map<string, UdpSession>();
 
       sock.on("message", (msg, rinfo) => {
         const peerAddr = `${rinfo.address}:${rinfo.port}`;
@@ -141,21 +149,34 @@ export class TunnelManager {
     });
   }
 
+  private refreshUdpSession(sessions: Map<string, UdpSession>, peerAddr: string): void {
+    const session = sessions.get(peerAddr);
+    if (!session) return;
+    session.lastActivity = Date.now();
+    clearTimeout(session.idleTimer);
+    session.idleTimer = setTimeout(() => {
+      console.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
+      session.dataConn.destroy();
+      sessions.delete(peerAddr);
+    }, UDP_SESSION_IDLE_MS);
+  }
+
   private async handleUdpMessage(
     tunnel: TunnelConfig,
     udpSock: dgram.Socket,
-    sessions: Map<string, net.Socket | import("tls").TLSSocket>,
+    sessions: Map<string, UdpSession>,
     peerAddr: string,
     msg: Buffer,
   ): Promise<void> {
-    let dataConn = sessions.get(peerAddr);
+    let session = sessions.get(peerAddr);
 
-    if (!dataConn || dataConn.destroyed) {
+    if (!session || session.dataConn.destroyed) {
       const requestId = crypto.randomUUID();
       console.log(
         `[TunnelManager] New UDP session for tunnel "${tunnel.name}", peer=${peerAddr}, requestId=${requestId}`,
       );
 
+      let dataConn: net.Socket | import("tls").TLSSocket;
       try {
         dataConn = await this.agentManager.dialUdpSession(
           tunnel.agentId,
@@ -163,38 +184,55 @@ export class TunnelManager {
           tunnel.id,
           peerAddr,
         );
-
-        sessions.set(peerAddr, dataConn);
-
-        // Forward UdpData frames from agent back to the external UDP peer
-        const decoder = new FrameDecoder();
-
-        decoder.onFrame = (frame) => {
-          if (frame.msgType !== MsgType.UdpData) return;
-          const body = frame.body as { peerAddr: string; payload: string };
-          const lastColon = body.peerAddr.lastIndexOf(":");
-          const host = body.peerAddr.slice(0, lastColon);
-          const port = parseInt(body.peerAddr.slice(lastColon + 1), 10);
-          const payload = Buffer.from(body.payload, "base64");
-          udpSock.send(payload, port, host);
-        };
-
-        decoder.onError = (err) => {
-          console.error(`[TunnelManager] UDP session decoder error:`, err);
-          dataConn!.destroy();
-        };
-
-        dataConn.on("data", (chunk: Buffer) => decoder.push(chunk));
-        dataConn.on("close", () => sessions.delete(peerAddr));
-        dataConn.on("error", () => {
-          dataConn!.destroy();
-          sessions.delete(peerAddr);
-        });
       } catch (err) {
         console.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}:`, err);
         return;
       }
+
+      // Set up idle timer for this session
+      const idleTimer = setTimeout(() => {
+        console.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
+        dataConn.destroy();
+        sessions.delete(peerAddr);
+      }, UDP_SESSION_IDLE_MS);
+
+      session = { dataConn, lastActivity: Date.now(), idleTimer };
+      sessions.set(peerAddr, session);
+
+      // Forward UdpData frames from agent back to the external UDP peer
+      const decoder = new FrameDecoder();
+
+      decoder.onFrame = (frame) => {
+        if (frame.msgType !== MsgType.UdpData) return;
+        const body = frame.body as { peerAddr: string; payload: string };
+        const lastColon = body.peerAddr.lastIndexOf(":");
+        const host = body.peerAddr.slice(0, lastColon);
+        const port = parseInt(body.peerAddr.slice(lastColon + 1), 10);
+        const payload = Buffer.from(body.payload, "base64");
+        // Refresh idle timer on response
+        this.refreshUdpSession(sessions, peerAddr);
+        udpSock.send(payload, port, host);
+      };
+
+      decoder.onError = (err) => {
+        console.error(`[TunnelManager] UDP session decoder error:`, err);
+        dataConn.destroy();
+      };
+
+      dataConn.on("data", (chunk: Buffer) => decoder.push(chunk));
+      dataConn.on("close", () => {
+        clearTimeout(session!.idleTimer);
+        sessions.delete(peerAddr);
+      });
+      dataConn.on("error", () => {
+        dataConn.destroy();
+        clearTimeout(session!.idleTimer);
+        sessions.delete(peerAddr);
+      });
     }
+
+    // Refresh idle timer on inbound datagram
+    this.refreshUdpSession(sessions, peerAddr);
 
     // Forward incoming UDP datagram to agent via UdpData frame
     const frame = encodeFrame(MsgType.UdpData, {
@@ -202,7 +240,7 @@ export class TunnelManager {
       payload: msg.toString("base64"),
     });
 
-    dataConn.write(frame);
+    session.dataConn.write(frame);
   }
 
   private stopListener(tunnelId: string, listener: Listener): Promise<void> {
@@ -210,7 +248,7 @@ export class TunnelManager {
 
     if (listener.type === "tcp") {
       return new Promise((resolve) => {
-        // Stop accepting new connections; existing ones continue
+        // Stop accepting new connections; existing ones continue (drain)
         listener.server.close(() => {
           console.log(`[TunnelManager] TCP listener stopped for tunnel ${tunnelId}`);
           resolve();
@@ -219,8 +257,9 @@ export class TunnelManager {
     } else {
       return new Promise((resolve) => {
         // Close all existing UDP sessions
-        for (const conn of listener.sessions.values()) {
-          conn.destroy();
+        for (const session of listener.sessions.values()) {
+          clearTimeout(session.idleTimer);
+          session.dataConn.destroy();
         }
         listener.sessions.clear();
         listener.socket.close(() => {

@@ -1,0 +1,28 @@
+version: "3.9"
+
+# Docker Compose for PrivateFRP
+# Runs the server. The agent runs separately on your private machine.
+# See README.md for setup instructions.
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    restart: unless-stopped
+    ports:
+      - "${AGENT_PORT:-7000}:7000"       # Agent TLS control/data port
+      - "${DASHBOARD_PORT:-8080}:8080"   # Dashboard HTTP port
+      # Tunnel ports — add your own as needed, e.g.:
+      # - "25565:25565"   # Minecraft
+      # - "9090:9090"     # Web
+    volumes:
+      - ./data:/app/data         # SQLite database
+      - ./certs:/app/certs:ro    # TLS certificates
+    environment:
+      AGENT_PORT: 7000
+      DASHBOARD_PORT: 8080
+      AGENT_TLS_CERT: /app/certs/server.crt
+      AGENT_TLS_KEY: /app/certs/server.key
+      DASHBOARD_SECRET: ${DASHBOARD_SECRET:-admin:changeme}
+      DATA_DIR: /app/data

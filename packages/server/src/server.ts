@@ -7,6 +7,7 @@ import {
   MsgType,
   type AgentHelloBody,
   type DataConnHelloBody,
+  type StandbyHelloBody,
   type HeartbeatBody,
   type TunnelConfig,
 } from "@privatefrp/shared";
@@ -100,7 +101,8 @@ export class Server {
 
   /**
    * Peek at the first frame to determine if this is a control connection
-   * (AgentHello) or a data connection (DataConnHello).
+   * (AgentHello), a data connection (DataConnHello), or a pre-warmed standby
+   * connection (StandbyHello).
    */
   private handleIncomingConnection(socket: tls.TLSSocket): void {
     const decoder = new FrameDecoder();
@@ -108,13 +110,14 @@ export class Server {
 
     const onFirstFrame = (frame: { msgType: number; body: unknown }) => {
       classified = true;
-      // Stop the one-shot listener; hand off to the appropriate handler
       decoder.onFrame = null;
 
       if (frame.msgType === MsgType.AgentHello) {
         this.handleControlConnection(socket, decoder, frame.body as AgentHelloBody);
       } else if (frame.msgType === MsgType.DataConnHello) {
         this.handleDataConnection(socket, frame.body as DataConnHelloBody);
+      } else if (frame.msgType === MsgType.StandbyHello) {
+        this.handleStandbyConnection(socket, frame.body as StandbyHelloBody);
       } else {
         console.warn("[Server] Unknown first frame type:", frame.msgType);
         socket.destroy();
@@ -181,7 +184,8 @@ export class Server {
       }),
     );
 
-    this.agentManager.register(agentId, socket, tunnels);
+    const remoteAddress = socket.remoteAddress ?? "unknown";
+    this.agentManager.register(agentId, socket, tunnels, remoteAddress);
 
     // Start heartbeat
     const heartbeatInterval = setInterval(() => {
@@ -237,6 +241,15 @@ export class Server {
       console.warn(
         `[Server] No pending dial for agentId=${agentId} requestId=${requestId}; closing data conn`,
       );
+      socket.destroy();
+    }
+  }
+
+  private handleStandbyConnection(socket: tls.TLSSocket, hello: StandbyHelloBody): void {
+    const { agentId } = hello;
+    const added = this.agentManager.addStandby(agentId, socket);
+    if (!added) {
+      console.warn(`[Server] StandbyHello from unknown agent ${agentId}; closing`);
       socket.destroy();
     }
   }
