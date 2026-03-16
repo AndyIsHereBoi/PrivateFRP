@@ -70,7 +70,59 @@ chmod +x ./privatefrp-server-linux-amd64 ./privatefrp-agent-linux-amd64
 ./privatefrp-agent-linux-amd64
 ```
 
-### 4. Finish in dashboard
+### 4. Optional: run as systemd services (Linux)
+
+Server unit example (/etc/systemd/system/privatefrp-server.service):
+
+```ini
+[Unit]
+Description=PrivateFRP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/privatefrp
+EnvironmentFile=/root/privatefrp/server.env
+ExecStart=/root/privatefrp/privatefrp-server-linux-amd64
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Agent unit example (/etc/systemd/system/privatefrp-agent.service):
+
+```ini
+[Unit]
+Description=PrivateFRP Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/privatefrp
+EnvironmentFile=/root/privatefrp/agent.env
+ExecStart=/root/privatefrp/privatefrp-agent-linux-amd64
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now privatefrp-server
+sudo systemctl enable --now privatefrp-agent
+```
+
+### 5. Finish in dashboard
 
 - Open http://<server-ip>:8080
 - Register agent and copy AGENT_ID + AGENT_SECRET
