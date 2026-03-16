@@ -35,6 +35,241 @@ function normalizeRemoteIp(ip: string | null | undefined): string {
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
 }
 
+type TrafficTunnelRow = {
+  id: string;
+  name: string;
+  type: string;
+  agentName: string;
+  incomingTraffic: number;
+  outgoingTraffic: number;
+};
+
+type TrafficWindow = "6h" | "1d" | "7d" | "1mo" | "6mo";
+type SortDir = "asc" | "desc";
+type TunnelSortKey = "total" | "in" | "out" | "name" | "type" | "agent";
+type IpSortKey = "total" | "in" | "out" | "ip" | "tunnels" | "lastSeen";
+
+type TrafficPayload = {
+  window: TrafficWindow;
+  tunnelSort: TunnelSortKey;
+  tunnelDir: SortDir;
+  ipSort: IpSortKey;
+  ipDir: SortDir;
+  tunnels: TrafficTunnelRow[];
+  topIps: TrafficIpRow[];
+};
+
+const TRAFFIC_WINDOW_SECONDS: Record<TrafficWindow, number> = {
+  "6h": 6 * 60 * 60,
+  "1d": 24 * 60 * 60,
+  "7d": 7 * 24 * 60 * 60,
+  "1mo": 30 * 24 * 60 * 60,
+  "6mo": 180 * 24 * 60 * 60,
+};
+
+function parseTrafficWindow(value: string | null): TrafficWindow {
+  if (value === "6h" || value === "1d" || value === "7d" || value === "1mo" || value === "6mo") {
+    return value;
+  }
+  return "1d";
+}
+
+function parseSortDir(value: string | null): SortDir {
+  return value === "asc" ? "asc" : "desc";
+}
+
+function parseTunnelSort(value: string | null): TunnelSortKey {
+  if (value === "in" || value === "out" || value === "name" || value === "type" || value === "agent") {
+    return value;
+  }
+  return "total";
+}
+
+function parseIpSort(value: string | null): IpSortKey {
+  if (value === "in" || value === "out" || value === "ip" || value === "tunnels" || value === "lastSeen") {
+    return value;
+  }
+  return "total";
+}
+
+type TrafficIpRow = {
+  ip: string;
+  incomingTraffic: number;
+  outgoingTraffic: number;
+  totalTraffic: number;
+  tunnelCount: number;
+  asn: string;
+  asnName: string;
+  lastSeen: number;
+};
+
+const ENABLE_IP_ASN_LOOKUP = /^(1|true|yes)$/i.test(process.env.IP_ASN_LOOKUP ?? "");
+const ASN_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const asnLookupCache = new Map<string, { asn: string; asnName: string; expiresAt: number }>();
+
+function isPrivateIp(ip: string): boolean {
+  if (!ip) return true;
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("192.168.")) return true;
+  if (ip.startsWith("172.")) {
+    const parts = ip.split(".");
+    const second = Number(parts[1]);
+    if (Number.isFinite(second) && second >= 16 && second <= 31) return true;
+  }
+  return false;
+}
+
+async function lookupAsnByIp(ip: string): Promise<{ asn: string; asnName: string }> {
+  if (!ENABLE_IP_ASN_LOOKUP || isPrivateIp(ip) || ip === "unknown") {
+    return { asn: "", asnName: "" };
+  }
+
+  const cached = asnLookupCache.get(ip);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { asn: cached.asn, asnName: cached.asnName };
+  }
+
+  try {
+    const res = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}?fields=success,connection`);
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const body = (await res.json()) as {
+      success?: boolean;
+      connection?: { asn?: number | string; org?: string };
+    };
+    const asnRaw = body.connection?.asn;
+    const asn = asnRaw === undefined || asnRaw === null || String(asnRaw).trim() === ""
+      ? ""
+      : `AS${String(asnRaw).replace(/^AS/i, "")}`;
+    const asnName = body.connection?.org?.trim() ?? "";
+    asnLookupCache.set(ip, { asn, asnName, expiresAt: Date.now() + ASN_CACHE_TTL_MS });
+    return { asn, asnName };
+  } catch {
+    // Cache negative lookups briefly to avoid repeated outbound requests.
+    asnLookupCache.set(ip, { asn: "", asnName: "", expiresAt: Date.now() + 5 * 60 * 1000 });
+    return { asn: "", asnName: "" };
+  }
+}
+
+function applyDirCompare(base: number, dir: SortDir): number {
+  return dir === "asc" ? base : -base;
+}
+
+async function buildTrafficPayload(db: DB, opts: {
+  window: TrafficWindow;
+  tunnelSort: TunnelSortKey;
+  tunnelDir: SortDir;
+  ipSort: IpSortKey;
+  ipDir: SortDir;
+}): Promise<TrafficPayload> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sinceSec = nowSec - TRAFFIC_WINDOW_SECONDS[opts.window];
+
+  const agentNameMap = new Map(db.listAgents().map((a) => [a.id, a.name]));
+  const windowByTunnel = new Map(
+    db.listTunnelTrafficWindow(sinceSec).map((row) => [row.tunnel_id, row]),
+  );
+  const tunnels: TrafficTunnelRow[] = db.listTunnels().map((t) => {
+    const windowRow = windowByTunnel.get(t.id);
+    return {
+    id: t.id,
+    name: t.name,
+    type: t.type,
+    agentName: agentNameMap.get(t.agent_id) ?? "Unknown Agent",
+      incomingTraffic: windowRow?.traffic_in_bytes ?? 0,
+      outgoingTraffic: windowRow?.traffic_out_bytes ?? 0,
+    };
+  });
+
+  tunnels.sort((a, b) => {
+    const aTotal = a.incomingTraffic + a.outgoingTraffic;
+    const bTotal = b.incomingTraffic + b.outgoingTraffic;
+    switch (opts.tunnelSort) {
+      case "in":
+        return applyDirCompare(a.incomingTraffic - b.incomingTraffic, opts.tunnelDir);
+      case "out":
+        return applyDirCompare(a.outgoingTraffic - b.outgoingTraffic, opts.tunnelDir);
+      case "name":
+        return opts.tunnelDir === "asc" ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+      case "type":
+        return opts.tunnelDir === "asc" ? a.type.localeCompare(b.type) : b.type.localeCompare(a.type);
+      case "agent":
+        return opts.tunnelDir === "asc"
+          ? a.agentName.localeCompare(b.agentName)
+          : b.agentName.localeCompare(a.agentName);
+      default:
+        return applyDirCompare(aTotal - bTotal, opts.tunnelDir);
+    }
+  });
+
+  const ipAgg = new Map<
+    string,
+    { incomingTraffic: number; outgoingTraffic: number; tunnelIds: Set<string>; lastSeen: number }
+  >();
+  for (const row of db.listIpTrafficWindow(sinceSec)) {
+    const ip = normalizeRemoteIp(row.remote_ip || "unknown") || "unknown";
+    const existing = ipAgg.get(ip);
+    if (existing) {
+      existing.incomingTraffic += row.traffic_in_bytes ?? 0;
+      existing.outgoingTraffic += row.traffic_out_bytes ?? 0;
+      existing.tunnelIds.add(row.tunnel_id);
+      existing.lastSeen = Math.max(existing.lastSeen, row.last_bucket_start ?? 0);
+    } else {
+      ipAgg.set(ip, {
+        incomingTraffic: row.traffic_in_bytes ?? 0,
+        outgoingTraffic: row.traffic_out_bytes ?? 0,
+        tunnelIds: new Set([row.tunnel_id]),
+        lastSeen: row.last_bucket_start ?? 0,
+      });
+    }
+  }
+
+  const sortedIp = Array.from(ipAgg.entries())
+    .map(([ip, value]) => ({
+      ip,
+      incomingTraffic: value.incomingTraffic,
+      outgoingTraffic: value.outgoingTraffic,
+      totalTraffic: value.incomingTraffic + value.outgoingTraffic,
+      tunnelCount: value.tunnelIds.size,
+      lastSeen: value.lastSeen,
+    }));
+
+  sortedIp.sort((a, b) => {
+    switch (opts.ipSort) {
+      case "in":
+        return applyDirCompare(a.incomingTraffic - b.incomingTraffic, opts.ipDir);
+      case "out":
+        return applyDirCompare(a.outgoingTraffic - b.outgoingTraffic, opts.ipDir);
+      case "ip":
+        return opts.ipDir === "asc" ? a.ip.localeCompare(b.ip) : b.ip.localeCompare(a.ip);
+      case "tunnels":
+        return applyDirCompare(a.tunnelCount - b.tunnelCount, opts.ipDir);
+      case "lastSeen":
+        return applyDirCompare(a.lastSeen - b.lastSeen, opts.ipDir);
+      default:
+        return applyDirCompare(a.totalTraffic - b.totalTraffic, opts.ipDir);
+    }
+  });
+
+  const topBase = sortedIp.slice(0, 50);
+  const asnResults = await Promise.all(topBase.map((row) => lookupAsnByIp(row.ip)));
+  const topIps: TrafficIpRow[] = topBase.map((row, i) => ({
+    ...row,
+    asn: asnResults[i]?.asn ?? "",
+    asnName: asnResults[i]?.asnName ?? "",
+  }));
+
+  return {
+    window: opts.window,
+    tunnelSort: opts.tunnelSort,
+    tunnelDir: opts.tunnelDir,
+    ipSort: opts.ipSort,
+    ipDir: opts.ipDir,
+    tunnels,
+    topIps,
+  };
+}
+
 const CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
@@ -211,16 +446,10 @@ function fmtBytes(bytes: number): string {
 }
 
 function trafficPage(
-  tunnels: Array<{
-    id: string;
-    name: string;
-    type: string;
-    agentName: string;
-    incomingTraffic: number;
-    outgoingTraffic: number;
-  }>,
+  payload: TrafficPayload,
   publicIp: string,
 ): string {
+  const { window, tunnelSort, tunnelDir, ipSort, ipDir, tunnels, topIps } = payload;
   const byAgent = new Map<string, typeof tunnels>();
   for (const t of tunnels) {
     const key = t.agentName || "Unknown Agent";
@@ -246,6 +475,24 @@ function trafficPage(
     })
     .join("\n");
 
+  const ipRows = topIps
+    .map((ip) => {
+      const asnLabel = ip.asn
+        ? `${escHtml(ip.asn)}${ip.asnName ? ` - ${escHtml(ip.asnName)}` : ""}`
+        : "";
+      const lastSeenLabel = ip.lastSeen ? new Date(ip.lastSeen * 1000).toLocaleString() : "";
+      return `<tr>
+        <td><code>${escHtml(ip.ip)}</code></td>
+        <td>${escHtml(asnLabel)}</td>
+        <td>${escHtml(String(ip.tunnelCount))}</td>
+        <td>${escHtml(fmtBytes(ip.incomingTraffic))}</td>
+        <td>${escHtml(fmtBytes(ip.outgoingTraffic))}</td>
+        <td>${escHtml(fmtBytes(ip.totalTraffic))}</td>
+        <td>${escHtml(lastSeenLabel)}</td>
+      </tr>`;
+    })
+    .join("\n");
+
   return pageShell({
     title: "PrivateFRP - Data Tracking",
     subtitle: "Data Tracking",
@@ -253,6 +500,75 @@ function trafficPage(
     publicIp,
     content: `
   <h1>Data Tracking</h1>
+  <div class="card compact" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;align-items:end">
+    <div>
+      <label style="margin-bottom:0.25rem">Range</label>
+      <select id="traffic-window" style="margin-bottom:0">
+        <option value="6h" ${window === "6h" ? "selected" : ""}>Last 6 hours</option>
+        <option value="1d" ${window === "1d" ? "selected" : ""}>Last 1 day</option>
+        <option value="7d" ${window === "7d" ? "selected" : ""}>Last 7 days</option>
+        <option value="1mo" ${window === "1mo" ? "selected" : ""}>Last 1 month</option>
+        <option value="6mo" ${window === "6mo" ? "selected" : ""}>Last 6 months</option>
+      </select>
+    </div>
+    <div>
+      <label style="margin-bottom:0.25rem">Tunnel sort</label>
+      <select id="tunnel-sort" style="margin-bottom:0">
+        <option value="total" ${tunnelSort === "total" ? "selected" : ""}>Total</option>
+        <option value="in" ${tunnelSort === "in" ? "selected" : ""}>Incoming</option>
+        <option value="out" ${tunnelSort === "out" ? "selected" : ""}>Outgoing</option>
+        <option value="name" ${tunnelSort === "name" ? "selected" : ""}>Name</option>
+        <option value="type" ${tunnelSort === "type" ? "selected" : ""}>Type</option>
+        <option value="agent" ${tunnelSort === "agent" ? "selected" : ""}>Agent</option>
+      </select>
+    </div>
+    <div>
+      <label style="margin-bottom:0.25rem">Tunnel direction</label>
+      <select id="tunnel-dir" style="margin-bottom:0">
+        <option value="desc" ${tunnelDir === "desc" ? "selected" : ""}>Descending</option>
+        <option value="asc" ${tunnelDir === "asc" ? "selected" : ""}>Ascending</option>
+      </select>
+    </div>
+    <div>
+      <label style="margin-bottom:0.25rem">IP sort</label>
+      <select id="ip-sort" style="margin-bottom:0">
+        <option value="total" ${ipSort === "total" ? "selected" : ""}>Total</option>
+        <option value="in" ${ipSort === "in" ? "selected" : ""}>Incoming</option>
+        <option value="out" ${ipSort === "out" ? "selected" : ""}>Outgoing</option>
+        <option value="ip" ${ipSort === "ip" ? "selected" : ""}>IP</option>
+        <option value="tunnels" ${ipSort === "tunnels" ? "selected" : ""}>Tunnel count</option>
+        <option value="lastSeen" ${ipSort === "lastSeen" ? "selected" : ""}>Last seen</option>
+      </select>
+    </div>
+    <div>
+      <label style="margin-bottom:0.25rem">IP direction</label>
+      <select id="ip-dir" style="margin-bottom:0">
+        <option value="desc" ${ipDir === "desc" ? "selected" : ""}>Descending</option>
+        <option value="asc" ${ipDir === "asc" ? "selected" : ""}>Ascending</option>
+      </select>
+    </div>
+  </div>
+
+  <h2>Top IPs</h2>
+  <p style="color:#94a3b8;font-size:0.85rem;margin-bottom:0.75rem">
+    Per-IP traffic is tracked across all tunnels. ${ENABLE_IP_ASN_LOOKUP ? "ASN lookups enabled." : "Set IP_ASN_LOOKUP=true on the server to enable ASN/org lookups."}
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>IP</th>
+        <th>ASN / Org</th>
+        <th>Tunnels</th>
+        <th>Incoming</th>
+        <th>Outgoing</th>
+        <th>Total</th>
+        <th>Last Seen</th>
+      </tr>
+    </thead>
+    <tbody id="top-ips-tbody">${ipRows || '<tr><td colspan="7" style="color:#64748b;text-align:center">No IP traffic captured yet</td></tr>'}</tbody>
+  </table>
+
+  <h2>Tunnel Totals</h2>
   <table>
     <thead>
       <tr>
@@ -284,10 +600,38 @@ function fmtBytes(bytes) {
 }
 async function refreshTraffic() {
   try {
-    const res = await fetch('/api/traffic');
+    const window = document.getElementById('traffic-window').value;
+    const tunnelSort = document.getElementById('tunnel-sort').value;
+    const tunnelDir = document.getElementById('tunnel-dir').value;
+    const ipSort = document.getElementById('ip-sort').value;
+    const ipDir = document.getElementById('ip-dir').value;
+    const params = new URLSearchParams({ window, tunnelSort, tunnelDir, ipSort, ipDir });
+    const res = await fetch('/api/traffic?' + params.toString());
     if (!res.ok) return;
-    const tunnels = await res.json();
+    const payload = await res.json();
+    const tunnels = Array.isArray(payload) ? payload : (payload.tunnels || []);
+    const topIps = Array.isArray(payload) ? [] : (payload.topIps || []);
+    const ipTbody = document.getElementById('top-ips-tbody');
     const tbody = document.getElementById('traffic-tbody');
+
+    if (!topIps.length) {
+      ipTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center">No IP traffic captured yet</td></tr>';
+    } else {
+      ipTbody.innerHTML = topIps.map(ip => {
+        const asn = ip.asn ? String(ip.asn) + (ip.asnName ? ' - ' + String(ip.asnName) : '') : '';
+        const lastSeen = ip.lastSeen ? new Date(Number(ip.lastSeen) * 1000).toLocaleString() : '';
+        return '<tr>' +
+          '<td><code>' + esc(ip.ip) + '</code></td>' +
+          '<td>' + esc(asn) + '</td>' +
+          '<td>' + esc(String(ip.tunnelCount || 0)) + '</td>' +
+          '<td>' + esc(fmtBytes(ip.incomingTraffic)) + '</td>' +
+          '<td>' + esc(fmtBytes(ip.outgoingTraffic)) + '</td>' +
+          '<td>' + esc(fmtBytes(ip.totalTraffic)) + '</td>' +
+          '<td>' + esc(lastSeen) + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
     if (!tunnels.length) {
       tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;text-align:center">No tunnels configured</td></tr>';
       return;
@@ -314,6 +658,12 @@ async function refreshTraffic() {
   } catch (_) {}
 }
 
+['traffic-window', 'tunnel-sort', 'tunnel-dir', 'ip-sort', 'ip-dir'].forEach((id) => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', refreshTraffic);
+});
+
+refreshTraffic();
 setInterval(refreshTraffic, 10000);
 </script>
 `,
@@ -756,16 +1106,14 @@ export function startDashboard(opts: {
       }
 
       if (url.pathname === "/dashboard/traffic" && req.method === "GET") {
-        const agentNameMap = new Map(db.listAgents().map((a) => [a.id, a.name]));
-        const trafficRows = db.listTunnels().map((t) => ({
-          id: t.id,
-          name: t.name,
-          type: t.type,
-          agentName: agentNameMap.get(t.agent_id) ?? "Unknown Agent",
-          incomingTraffic: t.traffic_in_bytes ?? 0,
-          outgoingTraffic: t.traffic_out_bytes ?? 0,
-        }));
-        return html(trafficPage(trafficRows, publicIp));
+        const payload = await buildTrafficPayload(db, {
+          window: parseTrafficWindow(url.searchParams.get("window")),
+          tunnelSort: parseTunnelSort(url.searchParams.get("tunnelSort")),
+          tunnelDir: parseSortDir(url.searchParams.get("tunnelDir")),
+          ipSort: parseIpSort(url.searchParams.get("ipSort")),
+          ipDir: parseSortDir(url.searchParams.get("ipDir")),
+        });
+        return html(trafficPage(payload, publicIp));
       }
 
       if (url.pathname === "/api/agents" && req.method === "GET") {
@@ -799,16 +1147,14 @@ export function startDashboard(opts: {
       }
 
       if (url.pathname === "/api/traffic" && req.method === "GET") {
-        const agentNameMap = new Map(db.listAgents().map((a) => [a.id, a.name]));
         return json(
-          db.listTunnels().map((t) => ({
-            id: t.id,
-            name: t.name,
-            type: t.type,
-            agentName: agentNameMap.get(t.agent_id) ?? "Unknown Agent",
-            incomingTraffic: t.traffic_in_bytes ?? 0,
-            outgoingTraffic: t.traffic_out_bytes ?? 0,
-          })),
+          await buildTrafficPayload(db, {
+            window: parseTrafficWindow(url.searchParams.get("window")),
+            tunnelSort: parseTunnelSort(url.searchParams.get("tunnelSort")),
+            tunnelDir: parseSortDir(url.searchParams.get("tunnelDir")),
+            ipSort: parseIpSort(url.searchParams.get("ipSort")),
+            ipDir: parseSortDir(url.searchParams.get("ipDir")),
+          }),
         );
       }
 

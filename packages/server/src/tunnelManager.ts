@@ -8,6 +8,8 @@ import type { DB } from "./db";
 /** Idle timeout for UDP sessions - matches typical NAT mapping lifetime */
 const UDP_SESSION_IDLE_MS = 90_000; // 90 seconds
 const TRAFFIC_FLUSH_INTERVAL_MS = 5_000;
+const TRAFFIC_ROLLUP_BUCKET_SECONDS = 300;
+const TRAFFIC_RETENTION_SECONDS = 190 * 24 * 60 * 60;
 
 /**
  * Returns true for errors that are expected when an agent goes offline
@@ -46,8 +48,23 @@ interface UdpListener {
 interface TunnelTrafficState {
   totalInBytes: number;
   totalOutBytes: number;
+  pendingInBytes: number;
+  pendingOutBytes: number;
   lastFlushedInBytes: number;
   lastFlushedOutBytes: number;
+  dirty: boolean;
+}
+
+interface IpTrafficState {
+  tunnelId: string;
+  remoteIp: string;
+  totalInBytes: number;
+  totalOutBytes: number;
+  pendingInBytes: number;
+  pendingOutBytes: number;
+  lastFlushedInBytes: number;
+  lastFlushedOutBytes: number;
+  lastSeen: number;
   dirty: boolean;
 }
 
@@ -58,7 +75,9 @@ export class TunnelManager {
   private agentManager: AgentManager;
   private db: DB;
   private trafficByTunnel: Map<string, TunnelTrafficState> = new Map();
+  private trafficByIp: Map<string, IpTrafficState> = new Map();
   private trafficFlushInterval: ReturnType<typeof setInterval>;
+  private lastRollupPruneAt = 0;
 
   constructor(agentManager: AgentManager, db: DB) {
     this.agentManager = agentManager;
@@ -78,6 +97,8 @@ export class TunnelManager {
     const state: TunnelTrafficState = {
       totalInBytes: baselineIn,
       totalOutBytes: baselineOut,
+      pendingInBytes: 0,
+      pendingOutBytes: 0,
       lastFlushedInBytes: baselineIn,
       lastFlushedOutBytes: baselineOut,
       dirty: false,
@@ -90,6 +111,7 @@ export class TunnelManager {
     if (bytes <= 0) return;
     const state = this.ensureTrafficState(tunnelId);
     state.totalInBytes += bytes;
+    state.pendingInBytes += bytes;
     state.dirty = true;
   }
 
@@ -97,10 +119,79 @@ export class TunnelManager {
     if (bytes <= 0) return;
     const state = this.ensureTrafficState(tunnelId);
     state.totalOutBytes += bytes;
+    state.pendingOutBytes += bytes;
     state.dirty = true;
   }
 
+  private trafficIpKey(tunnelId: string, remoteIp: string): string {
+    return `${tunnelId}|${remoteIp}`;
+  }
+
+  private normalizeIp(ip: string): string {
+    if (!ip) return "unknown";
+    if (ip.startsWith("::ffff:")) return ip.slice(7);
+    return ip;
+  }
+
+  private parsePeerIp(peerAddr: string): string {
+    if (!peerAddr) return "unknown";
+    const lastColon = peerAddr.lastIndexOf(":");
+    if (lastColon <= 0) return this.normalizeIp(peerAddr);
+    return this.normalizeIp(peerAddr.slice(0, lastColon));
+  }
+
+  private ensureIpTrafficState(tunnelId: string, remoteIpRaw: string): IpTrafficState {
+    const remoteIp = this.normalizeIp(remoteIpRaw);
+    const key = this.trafficIpKey(tunnelId, remoteIp);
+    const existing = this.trafficByIp.get(key);
+    if (existing) return existing;
+
+    const persisted = this.db.getIpTrafficTotals(tunnelId, remoteIp);
+    const baselineIn = persisted?.inBytes ?? 0;
+    const baselineOut = persisted?.outBytes ?? 0;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const state: IpTrafficState = {
+      tunnelId,
+      remoteIp,
+      totalInBytes: baselineIn,
+      totalOutBytes: baselineOut,
+      pendingInBytes: 0,
+      pendingOutBytes: 0,
+      lastFlushedInBytes: baselineIn,
+      lastFlushedOutBytes: baselineOut,
+      lastSeen: persisted?.lastSeen ?? nowSec,
+      dirty: false,
+    };
+    this.trafficByIp.set(key, state);
+    return state;
+  }
+
+  private addIpTrafficIn(tunnelId: string, remoteIp: string, bytes: number): void {
+    if (bytes <= 0) return;
+    const state = this.ensureIpTrafficState(tunnelId, remoteIp);
+    state.totalInBytes += bytes;
+    state.pendingInBytes += bytes;
+    state.lastSeen = Math.floor(Date.now() / 1000);
+    state.dirty = true;
+  }
+
+  private addIpTrafficOut(tunnelId: string, remoteIp: string, bytes: number): void {
+    if (bytes <= 0) return;
+    const state = this.ensureIpTrafficState(tunnelId, remoteIp);
+    state.totalOutBytes += bytes;
+    state.pendingOutBytes += bytes;
+    state.lastSeen = Math.floor(Date.now() / 1000);
+    state.dirty = true;
+  }
+
+  private currentRollupBucketStart(nowSec: number): number {
+    return nowSec - (nowSec % TRAFFIC_ROLLUP_BUCKET_SECONDS);
+  }
+
   private flushTrafficToDb(): void {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const bucketStart = this.currentRollupBucketStart(nowSec);
+
     for (const [tunnelId, state] of this.trafficByTunnel) {
       if (!state.dirty) continue;
       if (
@@ -112,12 +203,72 @@ export class TunnelManager {
       }
 
       try {
+        if (state.pendingInBytes > 0 || state.pendingOutBytes > 0) {
+          this.db.addTrafficRollupBucket(
+            bucketStart,
+            tunnelId,
+            "",
+            state.pendingInBytes,
+            state.pendingOutBytes,
+          );
+        }
         this.db.updateTunnelTrafficTotals(tunnelId, state.totalInBytes, state.totalOutBytes);
         state.lastFlushedInBytes = state.totalInBytes;
         state.lastFlushedOutBytes = state.totalOutBytes;
+        state.pendingInBytes = 0;
+        state.pendingOutBytes = 0;
         state.dirty = false;
       } catch (err) {
         console.error(`[TunnelManager] Failed to flush traffic stats for tunnel ${tunnelId}:`, err);
+      }
+    }
+
+    for (const state of this.trafficByIp.values()) {
+      if (!state.dirty) continue;
+      if (
+        state.totalInBytes === state.lastFlushedInBytes &&
+        state.totalOutBytes === state.lastFlushedOutBytes
+      ) {
+        state.dirty = false;
+        continue;
+      }
+
+      try {
+        if (state.pendingInBytes > 0 || state.pendingOutBytes > 0) {
+          this.db.addTrafficRollupBucket(
+            bucketStart,
+            state.tunnelId,
+            state.remoteIp,
+            state.pendingInBytes,
+            state.pendingOutBytes,
+          );
+        }
+        this.db.upsertIpTrafficTotals(
+          state.tunnelId,
+          state.remoteIp,
+          state.totalInBytes,
+          state.totalOutBytes,
+          state.lastSeen,
+        );
+        state.lastFlushedInBytes = state.totalInBytes;
+        state.lastFlushedOutBytes = state.totalOutBytes;
+        state.pendingInBytes = 0;
+        state.pendingOutBytes = 0;
+        state.dirty = false;
+      } catch (err) {
+        console.error(
+          `[TunnelManager] Failed to flush IP traffic stats for ${state.tunnelId} ${state.remoteIp}:`,
+          err,
+        );
+      }
+    }
+
+    if (nowSec - this.lastRollupPruneAt >= 24 * 60 * 60) {
+      try {
+        this.db.pruneTrafficRollups(nowSec - TRAFFIC_RETENTION_SECONDS);
+        this.lastRollupPruneAt = nowSec;
+      } catch (err) {
+        console.error("[TunnelManager] Failed to prune traffic rollups:", err);
       }
     }
   }
@@ -218,6 +369,7 @@ export class TunnelManager {
 
       dataSocket.setNoDelay(true);
       this.agentManager.incActiveConnections(tunnel.agentId);
+      const remoteIp = this.normalizeIp(clientSocket.remoteAddress ?? "unknown");
       let connectionReleased = false;
       const releaseConnection = () => {
         if (connectionReleased) return;
@@ -227,8 +379,14 @@ export class TunnelManager {
       dataSocket.once("close", releaseConnection);
 
       // Track tunnel traffic while preserving transparent byte forwarding.
-      clientSocket.on("data", (chunk: Buffer) => this.addTrafficIn(tunnel.id, chunk.length));
-      dataSocket.on("data", (chunk: Buffer) => this.addTrafficOut(tunnel.id, chunk.length));
+      clientSocket.on("data", (chunk: Buffer) => {
+        this.addTrafficIn(tunnel.id, chunk.length);
+        this.addIpTrafficIn(tunnel.id, remoteIp, chunk.length);
+      });
+      dataSocket.on("data", (chunk: Buffer) => {
+        this.addTrafficOut(tunnel.id, chunk.length);
+        this.addIpTrafficOut(tunnel.id, remoteIp, chunk.length);
+      });
 
       clientSocket.pipe(dataSocket);
       dataSocket.pipe(clientSocket);
@@ -349,7 +507,9 @@ export class TunnelManager {
         const host = body.peerAddr.slice(0, lastColon);
         const port = parseInt(body.peerAddr.slice(lastColon + 1), 10);
         const payload = Buffer.from(body.payload, "base64");
+        const remoteIp = this.parsePeerIp(body.peerAddr);
         this.addTrafficOut(tunnel.id, payload.length);
+        this.addIpTrafficOut(tunnel.id, remoteIp, payload.length);
         this.refreshUdpSession(sessions, peerAddr);
         udpSock.send(payload, port, host);
       };
@@ -373,6 +533,7 @@ export class TunnelManager {
 
     this.refreshUdpSession(sessions, peerAddr);
     this.addTrafficIn(tunnel.id, msg.length);
+    this.addIpTrafficIn(tunnel.id, this.parsePeerIp(peerAddr), msg.length);
 
     const frame = encodeFrame(MsgType.UdpData, {
       peerAddr,

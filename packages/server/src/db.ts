@@ -24,6 +24,33 @@ CREATE TABLE IF NOT EXISTS tunnels (
   created_at INTEGER DEFAULT (unixepoch()),
   FOREIGN KEY (agent_id) REFERENCES agents(id)
 );
+
+CREATE TABLE IF NOT EXISTS ip_traffic (
+  tunnel_id TEXT NOT NULL,
+  remote_ip TEXT NOT NULL,
+  traffic_in_bytes INTEGER NOT NULL DEFAULT 0,
+  traffic_out_bytes INTEGER NOT NULL DEFAULT 0,
+  first_seen INTEGER DEFAULT (unixepoch()),
+  last_seen INTEGER DEFAULT (unixepoch()),
+  PRIMARY KEY (tunnel_id, remote_ip),
+  FOREIGN KEY (tunnel_id) REFERENCES tunnels(id)
+);
+
+CREATE TABLE IF NOT EXISTS traffic_rollups (
+  bucket_start INTEGER NOT NULL,
+  tunnel_id TEXT NOT NULL,
+  remote_ip TEXT NOT NULL,
+  traffic_in_bytes INTEGER NOT NULL DEFAULT 0,
+  traffic_out_bytes INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket_start, tunnel_id, remote_ip),
+  FOREIGN KEY (tunnel_id) REFERENCES tunnels(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_traffic_rollups_tunnel_bucket
+  ON traffic_rollups (tunnel_id, bucket_start);
+
+CREATE INDEX IF NOT EXISTS idx_traffic_rollups_bucket
+  ON traffic_rollups (bucket_start);
 `;
 
 export interface AgentRow {
@@ -44,6 +71,29 @@ export interface TunnelRow {
   traffic_in_bytes: number;
   traffic_out_bytes: number;
   created_at: number;
+}
+
+export interface IpTrafficRow {
+  tunnel_id: string;
+  remote_ip: string;
+  traffic_in_bytes: number;
+  traffic_out_bytes: number;
+  first_seen: number;
+  last_seen: number;
+}
+
+export interface TunnelTrafficWindowRow {
+  tunnel_id: string;
+  traffic_in_bytes: number;
+  traffic_out_bytes: number;
+}
+
+export interface IpTrafficWindowRow {
+  tunnel_id: string;
+  remote_ip: string;
+  traffic_in_bytes: number;
+  traffic_out_bytes: number;
+  last_bucket_start: number;
 }
 
 export class DB {
@@ -151,6 +201,8 @@ export class DB {
   }
 
   deleteTunnel(id: string): void {
+    this.db.query("DELETE FROM traffic_rollups WHERE tunnel_id = ?").run(id);
+    this.db.query("DELETE FROM ip_traffic WHERE tunnel_id = ?").run(id);
     this.db.query("DELETE FROM tunnels WHERE id = ?").run(id);
   }
 
@@ -168,6 +220,99 @@ export class DB {
       .get(id);
     if (!row) return null;
     return { inBytes: row.traffic_in_bytes ?? 0, outBytes: row.traffic_out_bytes ?? 0 };
+  }
+
+  upsertIpTrafficTotals(
+    tunnelId: string,
+    remoteIp: string,
+    inBytes: number,
+    outBytes: number,
+    lastSeen: number,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO ip_traffic (tunnel_id, remote_ip, traffic_in_bytes, traffic_out_bytes, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(tunnel_id, remote_ip) DO UPDATE SET
+           traffic_in_bytes = excluded.traffic_in_bytes,
+           traffic_out_bytes = excluded.traffic_out_bytes,
+           last_seen = excluded.last_seen`,
+      )
+      .run(tunnelId, remoteIp, inBytes, outBytes, lastSeen, lastSeen);
+  }
+
+  getIpTrafficTotals(tunnelId: string, remoteIp: string): { inBytes: number; outBytes: number; lastSeen: number } | null {
+    const row = this.db
+      .query<{ traffic_in_bytes: number; traffic_out_bytes: number; last_seen: number }, [string, string]>(
+        "SELECT traffic_in_bytes, traffic_out_bytes, last_seen FROM ip_traffic WHERE tunnel_id = ? AND remote_ip = ?",
+      )
+      .get(tunnelId, remoteIp);
+    if (!row) return null;
+    return {
+      inBytes: row.traffic_in_bytes ?? 0,
+      outBytes: row.traffic_out_bytes ?? 0,
+      lastSeen: row.last_seen ?? 0,
+    };
+  }
+
+  listIpTraffic(): IpTrafficRow[] {
+    return this.db
+      .query<IpTrafficRow, []>(
+        "SELECT tunnel_id, remote_ip, traffic_in_bytes, traffic_out_bytes, first_seen, last_seen FROM ip_traffic ORDER BY (traffic_in_bytes + traffic_out_bytes) DESC",
+      )
+      .all();
+  }
+
+  addTrafficRollupBucket(
+    bucketStart: number,
+    tunnelId: string,
+    remoteIp: string,
+    inBytesDelta: number,
+    outBytesDelta: number,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO traffic_rollups (bucket_start, tunnel_id, remote_ip, traffic_in_bytes, traffic_out_bytes)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(bucket_start, tunnel_id, remote_ip) DO UPDATE SET
+           traffic_in_bytes = traffic_rollups.traffic_in_bytes + excluded.traffic_in_bytes,
+           traffic_out_bytes = traffic_rollups.traffic_out_bytes + excluded.traffic_out_bytes`,
+      )
+      .run(bucketStart, tunnelId, remoteIp, inBytesDelta, outBytesDelta);
+  }
+
+  listTunnelTrafficWindow(sinceEpochSec: number): TunnelTrafficWindowRow[] {
+    return this.db
+      .query<TunnelTrafficWindowRow, [number]>(
+        `SELECT
+           tunnel_id,
+           SUM(traffic_in_bytes) AS traffic_in_bytes,
+           SUM(traffic_out_bytes) AS traffic_out_bytes
+         FROM traffic_rollups
+         WHERE bucket_start >= ? AND remote_ip = ''
+         GROUP BY tunnel_id`,
+      )
+      .all(sinceEpochSec);
+  }
+
+  listIpTrafficWindow(sinceEpochSec: number): IpTrafficWindowRow[] {
+    return this.db
+      .query<IpTrafficWindowRow, [number]>(
+        `SELECT
+           tunnel_id,
+           remote_ip,
+           SUM(traffic_in_bytes) AS traffic_in_bytes,
+           SUM(traffic_out_bytes) AS traffic_out_bytes,
+           MAX(bucket_start) AS last_bucket_start
+         FROM traffic_rollups
+         WHERE bucket_start >= ? AND remote_ip <> ''
+         GROUP BY tunnel_id, remote_ip`,
+      )
+      .all(sinceEpochSec);
+  }
+
+  pruneTrafficRollups(beforeEpochSec: number): void {
+    this.db.query("DELETE FROM traffic_rollups WHERE bucket_start < ?").run(beforeEpochSec);
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────

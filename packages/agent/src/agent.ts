@@ -42,6 +42,7 @@ export class Agent {
   private socket: tls.TLSSocket | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private controlWatchdogInterval: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
 
@@ -76,11 +77,17 @@ export class Agent {
     this.stopping = true;
     this.poolEnabled = false;
     this.cleanupControlWatchdog();
+    this.cleanupReconnectTimer();
     this.socket?.destroy();
   }
 
   private connect(): void {
     if (this.stopping) return;
+
+    this.cleanupReconnectTimer();
+
+    // Avoid creating a second control connection while one is still alive.
+    if (this.socket && !this.socket.destroyed) return;
 
     // Reset pool state for the new session
     this.poolEnabled = false;
@@ -116,7 +123,7 @@ export class Agent {
     });
 
     let lastControlRxAt = Date.now();
-    socket.on("data", (chunk) => {
+    socket.on("data", (chunk: Buffer) => {
       lastControlRxAt = Date.now();
       decoder.push(chunk);
     });
@@ -153,7 +160,12 @@ export class Agent {
 
         case MsgType.Heartbeat:
           // Echo server timestamp so the server can measure RTT.
-          socket.write(encodeFrame(MsgType.Heartbeat, frame.body ?? {}));
+          socket.write(
+            encodeFrame(
+              MsgType.Heartbeat,
+              (frame.body ?? {}) as Record<string, unknown>,
+            ),
+          );
           break;
 
         case MsgType.DialTcp: {
@@ -176,15 +188,14 @@ export class Agent {
     };
 
     socket.on("close", () => {
+      if (this.socket === socket) {
+        this.socket = null;
+      }
       this.poolEnabled = false;
       this.cleanupHeartbeat();
       this.cleanupControlWatchdog();
       if (!this.stopping) {
-        console.log(`[Agent] Disconnected. Reconnecting in ${this.reconnectDelay}ms...`);
-        setTimeout(() => {
-          this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
-          this.connect();
-        }, this.reconnectDelay);
+        this.scheduleReconnect("control channel closed");
       }
     });
 
@@ -249,6 +260,26 @@ export class Agent {
     if (this.controlWatchdogInterval) {
       clearInterval(this.controlWatchdogInterval);
       this.controlWatchdogInterval = null;
+    }
+  }
+
+  private scheduleReconnect(reason: string): void {
+    if (this.stopping) return;
+    if (this.reconnectTimer) return;
+
+    const delay = this.reconnectDelay;
+    console.log(`[Agent] ${reason}. Reconnecting in ${delay}ms...`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+      this.connect();
+    }, delay);
+  }
+
+  private cleanupReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
   }
 
