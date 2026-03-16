@@ -8,87 +8,67 @@ and a web-based management dashboard.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) ≥ 1.0
-- OpenSSL (for generating dev TLS certificates)
+- [Bun](https://bun.sh) ≥ 1.0 **or** [Docker](https://docs.docker.com/get-docker/) + Docker Compose
+- OpenSSL (for generating TLS certificates — only needed for non-Docker local dev)
 
 ---
 
-## Quick Start
+## Quick Start (Docker — recommended)
 
-### 1. Clone and install dependencies
+### 1. Clone the repository
 
 ```bash
 git clone <repo-url>
 cd PrivateFRP
-bun install
 ```
 
-### 2. Generate dev TLS certificates
+### 2. Generate TLS certificates
 
 ```bash
 bash scripts/generate-certs.sh
 # Creates certs/server.crt and certs/server.key
 ```
 
-### 3. Configure environment
-
-Create a `.env` file (or export variables):
+### 3. Start the server
 
 ```bash
-# Server
-AGENT_PORT=7000
-DASHBOARD_PORT=8080
-AGENT_TLS_CERT=./certs/server.crt
-AGENT_TLS_KEY=./certs/server.key
-DASHBOARD_SECRET=admin:changeme
-DATA_DIR=./data
+DASHBOARD_SECRET=admin:changeme docker compose up -d
 ```
 
+The dashboard is now available at **http://your-server-ip:8080**.
+
+> Add any tunnel listen ports you need to `docker-compose.yml` under `ports:` before
+> starting (e.g. `"25565:25565"` for a Minecraft server).
+
+### 4. Register an agent
+
+Open the dashboard, click **Register Agent**, give it a name and click **Generate**.
+Copy the `AGENT_ID` and `AGENT_SECRET` — the secret is shown **only once**.
+
+### 5. Start the agent (Docker)
+
+On the machine whose services you want to expose, create a `.env` file:
+
 ```bash
-# Agent
-SERVER_HOST=<your-server-ip>
+SERVER_HOST=your-server-ip
 SERVER_PORT=7000
-AGENT_ID=<uuid-from-register>
-AGENT_SECRET=<secret-from-register>
-TLS_REJECT_UNAUTHORIZED=false   # for self-signed certs in dev
+AGENT_ID=<paste agent id>
+AGENT_SECRET=<paste agent secret>
+TLS_REJECT_UNAUTHORIZED=false   # required for self-signed certs
 ```
 
-### 4. Start the server
+Then run:
 
 ```bash
-cd packages/server
-bun run start
-# Dashboard: http://localhost:8080  (default: admin / password)
+docker compose -f docker-compose.agent.yml up -d
 ```
 
-### 5. Register an agent
+### 6. Create a tunnel
 
-Open the dashboard at `http://localhost:8080`, click **Register Agent**, enter a
-friendly name (e.g. `home-server`), and click **Generate**. Copy the
-`AGENT_ID` and `AGENT_SECRET` — the secret is shown only once.
-
-Alternatively via API (append `?name=my-agent` to set the name):
+Use the **Create Tunnel** form on the dashboard, or via the API:
 
 ```bash
-curl -b 'session=<cookie>' -X POST \
-  "http://localhost:8080/api/agents/register?name=home-server"
-```
-
-### 6. Start the agent
-
-```bash
-cd packages/agent
-AGENT_ID=<id> AGENT_SECRET=<secret> TLS_REJECT_UNAUTHORIZED=false bun run start
-```
-
----
-
-## Creating a Tunnel
-
-Via the dashboard **Create Tunnel** form, or via API:
-
-```bash
-curl -X POST http://localhost:8080/api/tunnels \
+curl -X POST http://your-server-ip:8080/api/tunnels \
   -H 'Content-Type: application/json' \
   -b 'session=<your-session-cookie>' \
   -d '{
@@ -101,8 +81,79 @@ curl -X POST http://localhost:8080/api/tunnels \
   }'
 ```
 
-Traffic arriving on port `9090` of the **server** will be forwarded by the agent
+Traffic arriving on port `9090` of the **server** is now forwarded by the agent
 to `localhost:3000` on the **agent** host.
+
+---
+
+## Quick Start (without Docker)
+
+### 1. Clone and install dependencies
+
+```bash
+git clone <repo-url>
+cd PrivateFRP
+bun install
+```
+
+### 2. Generate TLS certificates
+
+```bash
+bash scripts/generate-certs.sh
+```
+
+### 3. Configure environment variables
+
+**Server** (create `packages/server/.env` or export variables):
+
+```bash
+AGENT_PORT=7000
+DASHBOARD_PORT=8080
+AGENT_TLS_CERT=./certs/server.crt
+AGENT_TLS_KEY=./certs/server.key
+DASHBOARD_SECRET=admin:changeme
+DATA_DIR=./data
+```
+
+**Agent** (create `packages/agent/.env` or export variables):
+
+```bash
+SERVER_HOST=<your-server-ip>
+SERVER_PORT=7000
+AGENT_ID=<uuid-from-dashboard>
+AGENT_SECRET=<secret-from-dashboard>
+TLS_REJECT_UNAUTHORIZED=false   # for self-signed certs in dev
+```
+
+### 4. Start the server
+
+```bash
+cd packages/server
+bun run start
+# Dashboard: http://localhost:8080
+```
+
+### 5. Register an agent and get credentials
+
+Open `http://localhost:8080`, click **Register Agent**, enter a name, click **Generate**.
+
+### 6. Start the agent
+
+```bash
+cd packages/agent
+bun run start
+```
+
+---
+
+## Managing Agents and Tunnels
+
+- **Register Agent** — click *Register Agent* in the dashboard navbar, give it a name and click *Generate*. Copy both values immediately.
+- **Delete Agent** — click the *Delete* button in the Agents table. All tunnels for that agent are also removed.
+- **Create Tunnel** — fill in the *Create Tunnel* form at the bottom of the dashboard (or use the API).
+- **Delete Tunnel** — click the *Delete* button in the Tunnels table row.
+
+The dashboard auto-refreshes every **10 seconds** using background fetch requests; focused form inputs are never interrupted.
 
 ---
 
@@ -115,21 +166,22 @@ to `localhost:3000` on the **agent** host.
 │  ┌──────────────────┐   │   TLS    │   ┌──────────────────┐  │
 │  │  Control Port    │◄──┼──────────┼───│  Control Conn    │  │
 │  │  (AGENT_PORT)    │   │          │   │  AgentHello      │  │
-│  │                  │   │          │   │  Heartbeat       │  │
+│  │                  │   │          │   │  Heartbeat (5 s) │  │
 │  │  AgentManager    │   │          │   └──────────────────┘  │
 │  │  TunnelManager   │   │          │                          │
 │  └──────────────────┘   │          │   ┌──────────────────┐  │
-│                         │          │   │  Data Conns      │  │
-│  ┌──────────────────┐   │          │   │  (per dial)      │  │
+│                         │          │   │  Standby Pool    │  │
+│  ┌──────────────────┐   │          │   │  (5 pre-warmed)  │  │
 │  │  Tunnel Ports    │   │          │   └──────────────────┘  │
 │  │  (TCP/UDP)       │   │          │                          │
+│  └──────────────────┘   │          │   ┌──────────────────┐  │
+│                         │          │   │  Data Conns      │  │
+│  ┌──────────────────┐   │          │   │  (per dial)      │  │
+│  │  Dashboard       │   │          │   └──────────────────┘  │
+│  │  (HTTP)          │   │          │                          │
 │  └──────────────────┘   │          │  Local Services         │
-│                         │          │  (targetHost:targetPort) │
-│  ┌──────────────────┐   │          └──────────────────────────┘
-│  │  Dashboard       │   │
-│  │  (HTTP)          │   │
-│  └──────────────────┘   │
-└─────────────────────────┘
+└─────────────────────────┘          │  (targetHost:targetPort) │
+                                     └──────────────────────────┘
 
 Data flow (TCP tunnel):
   External client → Server tunnel port → DialTcp msg → Agent → local service
@@ -156,7 +208,7 @@ Each frame: `[4-byte big-endian length][1-byte msg type][JSON body]`
 |---|---|---|---|
 | AgentHello | 0x01 | agent→server | Authentication |
 | ServerHello | 0x02 | server→agent | Auth result + initial config |
-| Heartbeat | 0x03 | both | Keep-alive |
+| Heartbeat | 0x03 | both | Keep-alive (every 5 s) |
 | ConfigPush | 0x04 | server→agent | Full tunnel config replacement |
 | DialTcp | 0x05 | server→agent | Request new TCP data connection |
 | DialUdpSession | 0x06 | server→agent | Request new UDP session |
@@ -178,6 +230,13 @@ players may connect simultaneously.
 
 After each standby is consumed, the agent automatically opens a replacement to
 keep the pool filled.
+
+### Heartbeat / Keep-alive
+
+Both the server and the agent send a `Heartbeat` frame every **5 seconds**.
+This prevents NAT/firewall idle-connection timeouts from silently dropping the
+control channel. The server records the timestamp of each received heartbeat to
+track agent liveness on the dashboard.
 
 ### UDP Session Idle Timeout
 
@@ -203,22 +262,41 @@ bun run build:agent
 
 ---
 
-## Docker
+## Docker Reference
 
-A `docker-compose.yml` and `Dockerfile.server` are included for containerised
-deployment. Add your tunnel ports to `docker-compose.yml` then:
+### Server (`docker-compose.yml`)
 
-```bash
-# Generate certs first
-bash scripts/generate-certs.sh
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_PORT` | `7000` | TLS port for agent connections |
+| `DASHBOARD_PORT` | `8080` | HTTP port for the dashboard |
+| `DASHBOARD_SECRET` | `admin:changeme` | Dashboard credentials `user:pass` |
+| `AGENT_TLS_CERT` | `/app/certs/server.crt` | Path to TLS certificate |
+| `AGENT_TLS_KEY` | `/app/certs/server.key` | Path to TLS private key |
+| `DATA_DIR` | `/app/data` | Directory for the SQLite database |
 
-DASHBOARD_SECRET=admin:changeme docker compose up -d
-```
+### Agent (`docker-compose.agent.yml`)
 
-The agent still runs as a Bun process on your private machine.
+| Variable | Default | Description |
+|---|---|---|
+| `SERVER_HOST` | *(required)* | Public IP or hostname of the server |
+| `SERVER_PORT` | `7000` | Agent TLS port on the server |
+| `AGENT_ID` | *(required)* | Agent UUID from the dashboard |
+| `AGENT_SECRET` | *(required)* | Agent secret from the dashboard |
+| `TLS_REJECT_UNAUTHORIZED` | `true` | Set `false` for self-signed certificates |
+
+---
+
+## Summary Notes
+
+- **Heartbeat keep-alive every 5 s** — both the server and agent send `Heartbeat` frames every 5 seconds (down from 30 s) to prevent NAT/firewall timeouts from dropping idle control connections.
+- The heartbeat echo loop (both sides echoing every received heartbeat, creating an infinite ping-pong) was removed; each side now only sends its own independent interval heartbeat.
+- The duplicate `socket.on("data")` listener on the server control channel (which caused every frame to be processed twice) was removed.
+- Standby connections now capture the control-socket reference at creation time so that reconnect events can no longer trigger stale standbys to send `StandbyHello` before the new control connection is registered.
 
 ---
 
 ## License
 
 MIT
+

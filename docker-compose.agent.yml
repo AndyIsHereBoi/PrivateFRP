@@ -1,0 +1,19 @@
+version: "3.9"
+
+# Docker Compose for the PrivateFRP agent.
+# Run this on the machine whose services you want to expose.
+# See README.md for full setup instructions.
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    restart: unless-stopped
+    environment:
+      SERVER_HOST: ${SERVER_HOST:?SERVER_HOST is required}
+      SERVER_PORT: ${SERVER_PORT:-7000}
+      AGENT_ID: ${AGENT_ID:?AGENT_ID is required}
+      AGENT_SECRET: ${AGENT_SECRET:?AGENT_SECRET is required}
+      # Set to "false" when using a self-signed certificate on the server
+      TLS_REJECT_UNAUTHORIZED: ${TLS_REJECT_UNAUTHORIZED:-true}

@@ -139,6 +139,7 @@ function dashboardPage(
         <td>${status} ${standbyInfo}</td>
         <td>${escHtml(a.remoteAddress) || "—"}</td>
         <td>${hb}</td>
+        <td><button class="btn btn-danger" data-agent-id="${escHtml(a.id)}" data-agent-name="${escHtml(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button></td>
       </tr>`;
     })
     .join("\n");
@@ -155,9 +156,7 @@ function dashboardPage(
         <td>${t.listenPort}</td>
         <td>${escHtml(t.targetHost)}:${t.targetPort}</td>
         <td>${escHtml(t.agentName)}</td>
-        <td><form method="POST" action="/api/tunnels/${t.id}/delete" onsubmit="return confirm('Delete tunnel \\'${escHtml(t.name)}\\'?')">
-          <button class="btn btn-danger" type="submit">Delete</button>
-        </form></td>
+        <td><button class="btn btn-danger" data-tunnel-id="${escHtml(t.id)}" data-tunnel-name="${escHtml(t.name)}" onclick="deleteTunnel(this.dataset.tunnelId,this.dataset.tunnelName)">Delete</button></td>
       </tr>`;
     })
     .join("\n");
@@ -189,19 +188,19 @@ function dashboardPage(
 
   <h2>Agents</h2>
   <table>
-    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>IP Address</th><th>Last Heartbeat</th></tr></thead>
-    <tbody>${agentRows || '<tr><td colspan="5" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
+    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>IP Address</th><th>Last Heartbeat</th><th>Actions</th></tr></thead>
+    <tbody id="agents-tbody">${agentRows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
   </table>
 
   <h2>Tunnels</h2>
   <table>
     <thead><tr><th>Name</th><th>Type</th><th>Listen Port</th><th>Target</th><th>Agent</th><th>Actions</th></tr></thead>
-    <tbody>${tunnelRows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
+    <tbody id="tunnels-tbody">${tunnelRows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
   </table>
 
   <h2>Create Tunnel</h2>
   <div class="card">
-    <form method="POST" action="/api/tunnels">
+    <form id="createTunnelForm" onsubmit="createTunnel(event)">
       <div class="form-row">
         <div><label>Name</label><input name="name" placeholder="my-tunnel" required></div>
         <div><label>Type</label>
@@ -214,7 +213,7 @@ function dashboardPage(
         <div><label>Target Host</label><input name="targetHost" placeholder="localhost" required></div>
         <div><label>Target Port</label><input name="targetPort" type="number" min="1" max="65535" placeholder="3000" required></div>
         <div><label>Agent ID</label>
-          <select name="agentId">
+          <select name="agentId" id="agentSelect">
             ${agentOptions || '<option value="">No agents</option>'}
           </select>
         </div>
@@ -244,6 +243,113 @@ function dashboardPage(
 </div>
 
 <script>
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function refreshData() {
+  try {
+    const [agentsRes, tunnelsRes] = await Promise.all([
+      fetch('/api/agents'),
+      fetch('/api/tunnels')
+    ]);
+    if (!agentsRes.ok || !tunnelsRes.ok) return;
+    const agents = await agentsRes.json();
+    const tunnels = await tunnelsRes.json();
+    const nameMap = {};
+    agents.forEach(a => { nameMap[a.id] = a.name; });
+    updateAgentsTable(agents);
+    updateTunnelsTable(tunnels, nameMap);
+    updateAgentSelect(agents);
+  } catch (_) { /* network error — skip this tick */ }
+}
+
+function updateAgentsTable(agents) {
+  const tbody = document.getElementById('agents-tbody');
+  if (!agents.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b;text-align:center">No agents registered</td></tr>';
+    return;
+  }
+  tbody.innerHTML = agents.map(a => {
+    const status = a.connected
+      ? '<span class="badge badge-green">Connected</span>'
+      : '<span class="badge badge-gray">Offline</span>';
+    const standby = a.connected ? \`<span class="badge badge-blue">\${a.standbyCount} standby</span>\` : '';
+    const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '—';
+    return \`<tr>
+      <td><code style="font-size:0.78rem">\${esc(a.id)}</code></td>
+      <td>\${esc(a.name)}</td>
+      <td>\${status} \${standby}</td>
+      <td>\${esc(a.remoteAddress || '') || '—'}</td>
+      <td>\${hb}</td>
+      <td><button class="btn btn-danger" data-agent-id="\${esc(a.id)}" data-agent-name="\${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button></td>
+    </tr>\`;
+  }).join('');
+}
+
+function updateTunnelsTable(tunnels, nameMap) {
+  const tbody = document.getElementById('tunnels-tbody');
+  if (!tunnels.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b;text-align:center">No tunnels configured</td></tr>';
+    return;
+  }
+  tbody.innerHTML = tunnels.map(t => {
+    const badge = t.type === 'tcp'
+      ? '<span class="badge badge-blue">TCP</span>'
+      : '<span class="badge badge-purple">UDP</span>';
+    const agentName = nameMap[t.agentId] || t.agentId;
+    return \`<tr>
+      <td>\${esc(t.name)}</td>
+      <td>\${badge}</td>
+      <td>\${t.listenPort}</td>
+      <td>\${esc(t.targetHost)}:\${t.targetPort}</td>
+      <td>\${esc(agentName)}</td>
+      <td><button class="btn btn-danger" data-tunnel-id="\${esc(t.id)}" data-tunnel-name="\${esc(t.name)}" onclick="deleteTunnel(this.dataset.tunnelId,this.dataset.tunnelName)">Delete</button></td>
+    </tr>\`;
+  }).join('');
+}
+
+function updateAgentSelect(agents) {
+  const sel = document.getElementById('agentSelect');
+  const current = sel.value;
+  sel.innerHTML = agents.length
+    ? agents.map(a => \`<option value="\${esc(a.id)}">\${esc(a.name)} (\${esc(a.id.slice(0,8))}…)</option>\`).join('')
+    : '<option value="">No agents</option>';
+  if (current) sel.value = current;
+}
+
+async function deleteAgent(id, name) {
+  if (!confirm('Delete agent \'' + name + '\'? This will also remove all associated tunnels.')) return;
+  const res = await fetch('/api/agents/' + encodeURIComponent(id) + '/delete', { method: 'POST' });
+  if (!res.ok) { alert('Failed to delete agent'); return; }
+  await refreshData();
+}
+
+async function deleteTunnel(id, name) {
+  if (!confirm('Delete tunnel \'' + name + '\'?')) return;
+  const res = await fetch('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (!res.ok) { alert('Failed to delete tunnel'); return; }
+  await refreshData();
+}
+
+async function createTunnel(e) {
+  e.preventDefault();
+  const form = e.target;
+  const data = Object.fromEntries(new FormData(form));
+  const res = await fetch('/api/tunnels', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  if (res.ok) {
+    form.reset();
+    await refreshData();
+  } else {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }));
+    alert('Error: ' + (err.error || res.status));
+  }
+}
+
 async function registerAgent() {
   const name = document.getElementById('regName').value.trim();
   const params = name ? '?name=' + encodeURIComponent(name) : '';
@@ -252,9 +358,11 @@ async function registerAgent() {
   document.getElementById('regId').textContent = data.agentId;
   document.getElementById('regSecret').textContent = data.agentSecret;
   document.getElementById('regResult').style.display = 'block';
+  await refreshData();
 }
-// Auto-refresh every 15 seconds
-setTimeout(() => location.reload(), 15000);
+
+// Live-update tables every 10 seconds without a full page reload
+setInterval(refreshData, 10000);
 </script>
 </body></html>`;
 }
@@ -459,6 +567,28 @@ export function startDashboard(opts: {
         await onTunnelsChanged();
 
         if (req.method === "DELETE") {
+          return json({ ok: true });
+        }
+        return new Response(null, { status: 302, headers: { Location: "/dashboard" } });
+      }
+
+      // ── DELETE /api/agents/:id ─────────────────────────────────────────────
+      const deleteAgentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/delete$/) ||
+        (req.method === "DELETE" && url.pathname.match(/^\/api\/agents\/([^/]+)$/));
+      if (deleteAgentMatch) {
+        const id = deleteAgentMatch[1];
+        if (!db.getAgent(id)) {
+          return json({ error: "Agent not found" }, 404);
+        }
+        // Remove all tunnels for this agent first, then delete the agent
+        const agentTunnels = db.listTunnelsForAgent(id);
+        for (const t of agentTunnels) db.deleteTunnel(t.id);
+        db.deleteAgent(id);
+        // Disconnect the agent if it is currently connected
+        agentManager.unregister(id);
+        await onTunnelsChanged();
+
+        if (req.method === "DELETE" || url.pathname.endsWith("/delete")) {
           return json({ ok: true });
         }
         return new Response(null, { status: 302, headers: { Location: "/dashboard" } });
