@@ -101,8 +101,7 @@ export class Server {
 
   /**
    * Peek at the first frame to determine if this is a control connection
-   * (AgentHello), a data connection (DataConnHello), or a pre-warmed standby
-   * connection (StandbyHello).
+   * (AgentHello) or a data connection (DataConnHello).
    */
   private handleIncomingConnection(socket: tls.TLSSocket): void {
     const decoder = new FrameDecoder();

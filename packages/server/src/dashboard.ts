@@ -130,11 +130,10 @@ function dashboardPage(
       const hb = a.lastHeartbeat
         ? new Date(a.lastHeartbeat).toLocaleString()
         : "—";
-      const standbyInfo = "";
       return `<tr>
         <td><code style="font-size:0.78rem">${escHtml(a.id)}</code></td>
         <td>${escHtml(a.name)}</td>
-        <td>${status} ${standbyInfo}</td>
+        <td>${status}</td>
         <td>${escHtml(a.remoteAddress) || "—"}</td>
         <td>${hb}</td>
         <td><button class="btn btn-danger" data-agent-id="${escHtml(a.id)}" data-agent-name="${escHtml(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button></td>
@@ -275,12 +274,11 @@ function updateAgentsTable(agents) {
     const status = a.connected
       ? '<span class="badge badge-green">Connected</span>'
       : '<span class="badge badge-gray">Offline</span>';
-    const standby = '';
     const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '—';
     return \`<tr>
       <td><code style="font-size:0.78rem">\${esc(a.id)}</code></td>
       <td>\${esc(a.name)}</td>
-      <td>\${status} \${standby}</td>
+      <td>\${status}</td>
       <td>\${esc(a.remoteAddress || '') || '—'}</td>
       <td>\${hb}</td>
       <td><button class="btn btn-danger" data-agent-id="\${esc(a.id)}" data-agent-name="\${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button></td>
@@ -460,7 +458,6 @@ export function startDashboard(opts: {
             connected: !!connected,
             lastHeartbeat: connected?.lastHeartbeat ?? 0,
             remoteAddress: connected?.remoteAddress ?? "",
-            standbyCount: connected?.standbyPool.length ?? 0,
           };
         });
 
@@ -491,7 +488,6 @@ export function startDashboard(opts: {
               name: a.name,
               connected: !!connected,
               remoteAddress: connected?.remoteAddress ?? null,
-              standbyCount: connected?.standbyPool.length ?? 0,
               lastHeartbeat: connected?.lastHeartbeat ?? null,
               createdAt: a.created_at,
             };
