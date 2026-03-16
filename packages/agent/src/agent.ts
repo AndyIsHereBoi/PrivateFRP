@@ -45,6 +45,7 @@ export class Agent {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
+  private authRejected = false;
   private controlSocketGeneration = 0;
   private serverConnections: Set<tls.TLSSocket> = new Set();
 
@@ -84,7 +85,7 @@ export class Agent {
   }
 
   private connect(): void {
-    if (this.stopping) return;
+    if (this.stopping || this.authRejected) return;
 
     this.cleanupReconnectTimer();
 
@@ -150,6 +151,9 @@ export class Agent {
           clearTimeout(authTimeout);
           if (!body.ok) {
             console.error("[Agent] Server rejected auth:", body.message);
+            this.authRejected = true;
+            this.stop();
+            console.error("[Agent] Reconnect disabled after unauthorized/auth-failed response");
             socket.destroy();
             return;
           }

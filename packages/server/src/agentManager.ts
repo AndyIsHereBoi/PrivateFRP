@@ -86,6 +86,11 @@ export class AgentManager {
   unregister(agentId: string): void {
     const agent = this.agents.get(agentId);
     if (!agent) return;
+
+    // Forcefully terminate the control connection so removed agents are
+    // disconnected immediately from the server.
+    agent.socket.destroy();
+
     // Drain warm pool
     for (const entry of agent.warmPool) {
       entry.socket.removeListener("close", entry.onClose);
