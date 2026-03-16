@@ -49,6 +49,7 @@ export class Agent {
   private controlWatchdogInterval: ReturnType<typeof setInterval> | null = null;
   private controlHealthInterval: ReturnType<typeof setInterval> | null = null;
   private serverHeartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
+  private controlRxTimeout: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
@@ -99,6 +100,7 @@ export class Agent {
     this.cleanupControlWatchdog();
     this.cleanupControlHealthMonitor();
     this.cleanupServerHeartbeatTimeout();
+    this.cleanupControlRxTimeout();
     this.cleanupReconnectTimer();
     this.socket?.destroy();
   }
@@ -170,6 +172,7 @@ export class Agent {
     socket.on("data", (chunk: Buffer) => {
       if (!this.isActiveControlSocket(socket, generation)) return;
       this.controlLastRxAt = Date.now();
+      if (this.controlAuthenticated) this.armControlRxTimeout();
       decoder.push(chunk);
     });
 
@@ -200,6 +203,7 @@ export class Agent {
             `[Agent] Control keepalive guard armed (${CONTROL_HEARTBEAT_TIMEOUT_MS}ms timeout)`,
           );
           this.markServerHeartbeatReceived();
+          this.armControlRxTimeout();
           this.startHeartbeat(socket);
           this.startControlWatchdog(socket, () => this.controlLastRxAt);
           // Start pre-warming connections now that we are authenticated
@@ -259,6 +263,7 @@ export class Agent {
       this.cleanupHeartbeat();
       this.cleanupControlWatchdog();
       this.cleanupServerHeartbeatTimeout();
+      this.cleanupControlRxTimeout();
       if (!this.stopping) {
         this.scheduleReconnect("control channel closed");
       }
@@ -313,6 +318,7 @@ export class Agent {
         this.cleanupHeartbeat();
         this.cleanupControlWatchdog();
         this.cleanupServerHeartbeatTimeout();
+        this.cleanupControlRxTimeout();
         this.scheduleReconnect("control socket inactive");
         return;
       }
@@ -415,6 +421,27 @@ export class Agent {
     }
   }
 
+  private armControlRxTimeout(): void {
+    this.cleanupControlRxTimeout();
+    if (this.stopping || !this.controlAuthenticated) return;
+
+    this.controlRxTimeout = setTimeout(() => {
+      if (this.stopping || !this.controlAuthenticated) return;
+      const idleFor = Date.now() - this.controlLastRxAt;
+      console.warn(
+        `[Agent] Control TCP inactivity timeout (${idleFor}ms without server data); resetting all server connections`,
+      );
+      this.destroyAllServerConnections("control tcp inactivity timeout");
+    }, CONTROL_HEARTBEAT_TIMEOUT_MS);
+  }
+
+  private cleanupControlRxTimeout(): void {
+    if (this.controlRxTimeout) {
+      clearTimeout(this.controlRxTimeout);
+      this.controlRxTimeout = null;
+    }
+  }
+
   private startHeartbeat(socket: tls.TLSSocket): void {
     this.cleanupHeartbeat();
     this.heartbeatInterval = setInterval(() => {
@@ -501,6 +528,7 @@ export class Agent {
     this.cleanupHeartbeat();
     this.cleanupControlWatchdog();
     this.cleanupServerHeartbeatTimeout();
+    this.cleanupControlRxTimeout();
     this.controlSocketGeneration += 1;
     this.socket = null;
 
