@@ -7,7 +7,6 @@ import {
   MsgType,
   type AgentHelloBody,
   type DataConnHelloBody,
-  type StandbyHelloBody,
   type TunnelConfig,
 } from "@privatefrp/shared";
 import type { DB } from "./db";
@@ -132,15 +131,6 @@ export class Server {
         // so that the pipe picks them up as the first data.
         if (leftover.length > 0) socket.unshift(leftover);
         this.handleDataConnection(socket, frame.body as DataConnHelloBody);
-      } else if (frame.msgType === MsgType.StandbyHello) {
-        // Same as above: remove the classification listener so that raw tunnel
-        // data flowing through an assigned standby socket is not decoded.
-        // A well-behaved agent never sends anything after StandbyHello, so
-        // leftover bytes are unexpected but we unshift them for safety.
-        const leftover = decoder.detach();
-        socket.removeListener("data", onData);
-        if (leftover.length > 0) socket.unshift(leftover);
-        this.handleStandbyConnection(socket, frame.body as StandbyHelloBody);
       } else {
         console.warn("[Server] Unknown first frame type:", frame.msgType);
         socket.destroy();
@@ -258,15 +248,6 @@ export class Server {
       console.warn(
         `[Server] No pending dial for agentId=${agentId} requestId=${requestId}; closing data conn`,
       );
-      socket.destroy();
-    }
-  }
-
-  private handleStandbyConnection(socket: tls.TLSSocket, hello: StandbyHelloBody): void {
-    const { agentId } = hello;
-    const added = this.agentManager.addStandby(agentId, socket);
-    if (!added) {
-      console.warn(`[Server] StandbyHello from unknown agent ${agentId}; closing`);
       socket.destroy();
     }
   }

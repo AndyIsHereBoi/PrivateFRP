@@ -108,7 +108,6 @@ function dashboardPage(
     connected: boolean;
     lastHeartbeat: number;
     remoteAddress: string;
-    standbyCount: number;
   }>,
   tunnels: Array<{
     id: string;
@@ -131,9 +130,7 @@ function dashboardPage(
       const hb = a.lastHeartbeat
         ? new Date(a.lastHeartbeat).toLocaleString()
         : "—";
-      const standbyInfo = a.connected
-        ? `<span class="badge badge-blue">${a.standbyCount} standby</span>`
-        : "";
+      const standbyInfo = "";
       return `<tr>
         <td><code style="font-size:0.78rem">${escHtml(a.id)}</code></td>
         <td>${escHtml(a.name)}</td>
@@ -278,7 +275,7 @@ function updateAgentsTable(agents) {
     const status = a.connected
       ? '<span class="badge badge-green">Connected</span>'
       : '<span class="badge badge-gray">Offline</span>';
-    const standby = a.connected ? \`<span class="badge badge-blue">\${a.standbyCount} standby</span>\` : '';
+    const standby = '';
     const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '—';
     return \`<tr>
       <td><code style="font-size:0.78rem">\${esc(a.id)}</code></td>
