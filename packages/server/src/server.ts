@@ -109,15 +109,37 @@ export class Server {
     const decoder = new FrameDecoder();
     let classified = false;
 
+    // Keep a named reference so the listener can be removed for non-control
+    // connections before the socket transitions to raw-pipe mode.
+    const onData = (chunk: Buffer) => decoder.push(chunk);
+
     const onFirstFrame = (frame: { msgType: number; body: unknown }) => {
       classified = true;
       decoder.onFrame = null;
 
       if (frame.msgType === MsgType.AgentHello) {
+        // Control connections reuse the same decoder and keep the data listener;
+        // handleControlConnection just swaps decoder.onFrame for subsequent frames.
         this.handleControlConnection(socket, decoder, frame.body as AgentHelloBody);
       } else if (frame.msgType === MsgType.DataConnHello) {
+        // Stop the classification decoder and remove its listener before handing
+        // the socket off as a raw data pipe. Without this, tunnel response data
+        // (e.g. "HTTP/1.1 200 OK...") would be fed back through the decoder and
+        // trigger a spurious "Invalid frame length" error.
+        const leftover = decoder.detach();
+        socket.removeListener("data", onData);
+        // Re-inject any bytes that arrived in the same segment as DataConnHello
+        // so that the pipe picks them up as the first data.
+        if (leftover.length > 0) socket.unshift(leftover);
         this.handleDataConnection(socket, frame.body as DataConnHelloBody);
       } else if (frame.msgType === MsgType.StandbyHello) {
+        // Same as above: remove the classification listener so that raw tunnel
+        // data flowing through an assigned standby socket is not decoded.
+        // A well-behaved agent never sends anything after StandbyHello, so
+        // leftover bytes are unexpected but we unshift them for safety.
+        const leftover = decoder.detach();
+        socket.removeListener("data", onData);
+        if (leftover.length > 0) socket.unshift(leftover);
         this.handleStandbyConnection(socket, frame.body as StandbyHelloBody);
       } else {
         console.warn("[Server] Unknown first frame type:", frame.msgType);
@@ -131,7 +153,7 @@ export class Server {
       socket.destroy();
     };
 
-    socket.on("data", (chunk) => decoder.push(chunk));
+    socket.on("data", onData);
 
     socket.on("error", (err) => {
       if (!classified) {

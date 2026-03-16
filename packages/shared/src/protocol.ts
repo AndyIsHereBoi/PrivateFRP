@@ -119,6 +119,11 @@ export class FrameDecoder {
    * from framed-protocol mode to raw-stream mode so that leftover bytes
    * (e.g. the first bytes of raw TCP data that arrived in the same TCP
    * segment as the final framed message) are not lost or misinterpreted.
+   *
+   * After calling `detach()` the decoder is permanently stopped and must
+   * not be used again.  The `push()` method becomes a no-op once stopped,
+   * so any external reference to this decoder instance is safe to keep but
+   * will have no effect.
    */
   detach(): Buffer {
     this.stopped = true;
