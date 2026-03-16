@@ -48,6 +48,7 @@ export class Agent {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private controlWatchdogInterval: ReturnType<typeof setInterval> | null = null;
   private controlHealthInterval: ReturnType<typeof setInterval> | null = null;
+  private reconnectPulseInterval: ReturnType<typeof setInterval> | null = null;
   private serverHeartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
   private controlRxTimeout: ReturnType<typeof setTimeout> | null = null;
   private controlCountdownInterval: ReturnType<typeof setInterval> | null = null;
@@ -92,6 +93,7 @@ export class Agent {
       `[Agent] Control health monitor enabled (check=${CONTROL_STATUS_CHECK_INTERVAL_MS}ms, heartbeat-timeout=${CONTROL_HEARTBEAT_TIMEOUT_MS}ms)`,
     );
     this.startControlHealthMonitor();
+    this.startReconnectPulse();
     this.connect();
   }
 
@@ -100,6 +102,7 @@ export class Agent {
     this.poolEnabled = false;
     this.cleanupControlWatchdog();
     this.cleanupControlHealthMonitor();
+    this.cleanupReconnectPulse();
     this.cleanupServerHeartbeatTimeout();
     this.cleanupControlRxTimeout();
     this.cleanupControlCountdown();
@@ -257,6 +260,7 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
+      console.warn("[Agent] Control socket closed");
       if (this.socket === socket) {
         this.socket = null;
       }
@@ -277,7 +281,7 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
-      console.error("[Agent] Socket error:", err.message);
+      console.error("[Agent] Control socket error:", err.message);
       if (!socket.destroyed) socket.destroy();
     });
 
@@ -285,6 +289,7 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
+      console.warn("[Agent] Control socket ended by server");
       if (!socket.destroyed) socket.destroy();
     });
 
@@ -391,6 +396,28 @@ export class Agent {
     if (this.controlHealthInterval) {
       clearInterval(this.controlHealthInterval);
       this.controlHealthInterval = null;
+    }
+  }
+
+  private startReconnectPulse(): void {
+    this.cleanupReconnectPulse();
+    this.reconnectPulseInterval = setInterval(() => {
+      if (this.stopping || this.controlAuthenticated) return;
+
+      if (this.socket && !this.socket.destroyed) {
+        // Force progress if we are stuck with a non-authenticated stale socket.
+        this.socket.destroy();
+        return;
+      }
+
+      this.scheduleReconnect("reconnect pulse");
+    }, 2_000);
+  }
+
+  private cleanupReconnectPulse(): void {
+    if (this.reconnectPulseInterval) {
+      clearInterval(this.reconnectPulseInterval);
+      this.reconnectPulseInterval = null;
     }
   }
 
@@ -518,7 +545,10 @@ export class Agent {
 
   private scheduleReconnect(reason: string): void {
     if (this.stopping) return;
-    if (this.reconnectTimer) return;
+    if (this.reconnectTimer) {
+      console.log(`[Agent] Reconnect already scheduled; reason=${reason}`);
+      return;
+    }
 
     const delay = this.reconnectDelay;
     console.log(`[Agent] ${reason}. Reconnecting in ${delay}ms...`);
