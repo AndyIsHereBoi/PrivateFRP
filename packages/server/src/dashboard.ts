@@ -1215,7 +1215,7 @@ export function startDashboard(opts: {
         }
 
         if (url.pathname === "/api/agents/register" && (req.method === "GET" || req.method === "POST")) {
-        const agentId = crypto.randomUUID();
+        const agentId = generateAgentId(db);
         const agentSecret = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
         const agentName = url.searchParams.get("name")?.trim() || `agent-${agentId.slice(0, 8)}`;
         db.createAgent(agentId, agentName, agentSecret);
@@ -1345,4 +1345,12 @@ function parseRequestUrl(req: Request): URL | null {
   } catch {
     return null;
   }
+}
+
+function generateAgentId(db: DB): string {
+  for (let i = 0; i < 10; i++) {
+    const candidate = crypto.randomUUID().split("-")[0];
+    if (!db.getAgent(candidate)) return candidate;
+  }
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
 }
