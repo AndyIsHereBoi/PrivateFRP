@@ -50,6 +50,7 @@ export class Agent {
   private controlHealthInterval: ReturnType<typeof setInterval> | null = null;
   private serverHeartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
   private controlRxTimeout: ReturnType<typeof setTimeout> | null = null;
+  private controlCountdownInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
@@ -101,6 +102,7 @@ export class Agent {
     this.cleanupControlHealthMonitor();
     this.cleanupServerHeartbeatTimeout();
     this.cleanupControlRxTimeout();
+    this.cleanupControlCountdown();
     this.cleanupReconnectTimer();
     this.socket?.destroy();
   }
@@ -196,7 +198,7 @@ export class Agent {
           }
           console.log("[Agent] Authenticated:", body.message);
           this.controlAuthenticated = true;
-          socket.setTimeout(0);
+          socket.setTimeout(CONTROL_HEARTBEAT_TIMEOUT_MS);
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
           console.log(
@@ -204,6 +206,7 @@ export class Agent {
           );
           this.markServerHeartbeatReceived();
           this.armControlRxTimeout();
+          this.startControlCountdown();
           this.startHeartbeat(socket);
           this.startControlWatchdog(socket, () => this.controlLastRxAt);
           // Start pre-warming connections now that we are authenticated
@@ -264,6 +267,7 @@ export class Agent {
       this.cleanupControlWatchdog();
       this.cleanupServerHeartbeatTimeout();
       this.cleanupControlRxTimeout();
+      this.cleanupControlCountdown();
       if (!this.stopping) {
         this.scheduleReconnect("control channel closed");
       }
@@ -288,8 +292,8 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
-      console.warn("[Agent] Control socket timeout; forcing reconnect");
-      if (!socket.destroyed) socket.destroy();
+      console.warn("[Agent] Control socket inactivity timeout; resetting all server connections");
+      this.destroyAllServerConnections("control socket timeout");
     });
   }
 
@@ -319,6 +323,7 @@ export class Agent {
         this.cleanupControlWatchdog();
         this.cleanupServerHeartbeatTimeout();
         this.cleanupControlRxTimeout();
+        this.cleanupControlCountdown();
         this.scheduleReconnect("control socket inactive");
         return;
       }
@@ -442,6 +447,26 @@ export class Agent {
     }
   }
 
+  private startControlCountdown(): void {
+    this.cleanupControlCountdown();
+    this.controlCountdownInterval = setInterval(() => {
+      if (!this.controlAuthenticated || this.stopping) return;
+      const elapsed = Date.now() - this.controlLastRxAt;
+      const remainingMs = Math.max(0, CONTROL_HEARTBEAT_TIMEOUT_MS - elapsed);
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      console.log(
+        `[Agent] Control timeout countdown: ${remainingSec}s remaining before reset`,
+      );
+    }, 1_000);
+  }
+
+  private cleanupControlCountdown(): void {
+    if (this.controlCountdownInterval) {
+      clearInterval(this.controlCountdownInterval);
+      this.controlCountdownInterval = null;
+    }
+  }
+
   private startHeartbeat(socket: tls.TLSSocket): void {
     this.cleanupHeartbeat();
     this.heartbeatInterval = setInterval(() => {
@@ -529,6 +554,7 @@ export class Agent {
     this.cleanupControlWatchdog();
     this.cleanupServerHeartbeatTimeout();
     this.cleanupControlRxTimeout();
+    this.cleanupControlCountdown();
     this.controlSocketGeneration += 1;
     this.socket = null;
 
