@@ -12,6 +12,7 @@ if (!agentId || !agentSecret) {
 }
 
 console.log("[PrivateFRP Agent] Starting...");
+console.log("[PrivateFRP Agent] Build marker: reconnect-guard-v4");
 console.log(`  Server : ${serverHost}:${serverPort}`);
 console.log(`  Agent  : ${agentId}`);
 console.log(`  TLS verify: ${tlsRejectUnauthorized}`);
