@@ -229,16 +229,20 @@ export class Agent {
         if (frame.msgType !== MsgType.AssignStandby) return;
         const assign = frame.body as AssignStandbyBody;
 
-        // Remove decoder listeners — socket is now raw data
+        // Stop the decoder and grab any bytes that arrived in the same TCP
+        // segment after the AssignStandby frame (e.g. the start of raw HTTP
+        // traffic for TCP tunnels).  Without this the drain() loop would
+        // continue and misinterpret those raw bytes as a frame header.
+        const leftover = decoder.detach();
         standby.removeAllListeners("data");
 
         // Replenish the pool: open a replacement standby
         this.openStandbyConnection();
 
         if (assign.connType === "tcp") {
-          this.proxyTcpViaStandby(standby, assign);
+          this.proxyTcpViaStandby(standby, leftover, assign);
         } else {
-          this.proxyUdpViaStandby(standby, assign);
+          this.proxyUdpViaStandby(standby, leftover, assign);
         }
       };
 
@@ -266,7 +270,7 @@ export class Agent {
     });
   }
 
-  private proxyTcpViaStandby(dataConn: tls.TLSSocket, assign: AssignStandbyBody): void {
+  private proxyTcpViaStandby(dataConn: tls.TLSSocket, leftover: Buffer, assign: AssignStandbyBody): void {
     const tunnel = this.findTunnel(assign.tunnelId);
     if (!tunnel) {
       console.warn(`[Agent] AssignStandby: unknown tunnel ${assign.tunnelId}`);
@@ -281,6 +285,9 @@ export class Agent {
     const target = net.createConnection({ host: tunnel.targetHost, port: tunnel.targetPort });
 
     target.once("connect", () => {
+      // Forward any bytes that arrived in the same TCP segment as AssignStandby
+      // (e.g. the beginning of an HTTP request) before switching to pipe mode.
+      if (leftover.length > 0) target.write(leftover);
       dataConn.pipe(target);
       target.pipe(dataConn);
       dataConn.on("error", () => target.destroy());
@@ -295,7 +302,7 @@ export class Agent {
     });
   }
 
-  private proxyUdpViaStandby(dataConn: tls.TLSSocket, assign: AssignStandbyBody): void {
+  private proxyUdpViaStandby(dataConn: tls.TLSSocket, leftover: Buffer, assign: AssignStandbyBody): void {
     const tunnel = this.findTunnel(assign.tunnelId);
     if (!tunnel) {
       console.warn(`[Agent] AssignStandby: unknown tunnel ${assign.tunnelId}`);
@@ -322,6 +329,8 @@ export class Agent {
       };
 
       dataConn.on("data", (chunk: Buffer) => decoder.push(chunk));
+      // Replay any bytes that arrived together with the AssignStandby frame
+      if (leftover.length > 0) decoder.push(leftover);
       dataConn.on("close", () => udpSock.close());
       dataConn.on("error", (err) => {
         console.error(`[Agent] UDP standby data conn error:`, err.message);

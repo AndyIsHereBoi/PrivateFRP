@@ -103,16 +103,36 @@ export interface DecodedFrame {
  */
 export class FrameDecoder {
   private buf: Buffer = Buffer.alloc(0);
+  private stopped = false;
   onFrame: ((frame: DecodedFrame) => void) | null = null;
   onError: ((err: Error) => void) | null = null;
 
   push(chunk: Buffer): void {
+    if (this.stopped) return;
     this.buf = Buffer.concat([this.buf, chunk]);
     this.drain();
   }
 
+  /**
+   * Stop the decoder and return any bytes that were buffered but not yet
+   * emitted as a complete frame.  Call this when transitioning the socket
+   * from framed-protocol mode to raw-stream mode so that leftover bytes
+   * (e.g. the first bytes of raw TCP data that arrived in the same TCP
+   * segment as the final framed message) are not lost or misinterpreted.
+   */
+  detach(): Buffer {
+    this.stopped = true;
+    const leftover = this.buf;
+    this.buf = Buffer.alloc(0);
+    this.onFrame = null;
+    this.onError = null;
+    return leftover;
+  }
+
   private drain(): void {
     while (true) {
+      if (this.stopped) break;
+
       // Need at least 4 bytes to read the length header
       if (this.buf.length < 4) break;
 
