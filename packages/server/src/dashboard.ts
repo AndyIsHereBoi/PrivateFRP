@@ -203,7 +203,7 @@ async function buildTrafficPayload(db: DB, opts: {
     id: t.id,
     name: t.name,
     type: t.type,
-    agentName: agentNameMap.get(t.agent_id) ?? "Unknown Agent",
+    agentName: t.agent_id ? (agentNameMap.get(t.agent_id) ?? "Unknown Agent") : "Unassigned",
       incomingTraffic: windowRow?.traffic_in_bytes ?? 0,
       outgoingTraffic: windowRow?.traffic_out_bytes ?? 0,
     };
@@ -381,6 +381,7 @@ const CSS = `
   .btn-primary { background: #0284c7; color: #fff; }
   .btn-danger { background: #b91c1c; color: #fff; padding: 0.3rem 0.75rem; font-size: 0.8rem; }
   .btn-success { background: #15803d; color: #fff; }
+  .btn-compact { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
   .btn-edit { background:#0f766e; color:#ecfeff; padding:0.3rem 0.75rem; font-size:0.8rem; }
   .group { margin-top: 1rem; }
   .login-wrap { display: flex; justify-content: center; align-items: center; min-height: 100vh; }
@@ -489,7 +490,7 @@ function trafficPage(
   const { window, tunnelSort, tunnelDir, ipSort, ipDir, tunnels, topIps } = payload;
   const byAgent = new Map<string, typeof tunnels>();
   for (const t of tunnels) {
-    const key = t.agentName || "Unknown Agent";
+    const key = t.agentName || "Unassigned";
     const list = byAgent.get(key);
     if (list) list.push(t);
     else byAgent.set(key, [t]);
@@ -689,7 +690,7 @@ async function refreshTraffic() {
     }
     const byAgent = {};
     tunnels.forEach(t => {
-      const key = t.agentName || 'Unknown Agent';
+      const key = t.agentName || 'Unassigned';
       if (!byAgent[key]) byAgent[key] = [];
       byAgent[key].push(t);
     });
@@ -747,7 +748,7 @@ function agentsPage(
         <td>${escHtml(a.remoteAddress) || ""}</td>
         <td>${hb}</td>
         <td>
-          <button class="btn ${a.enabled ? "btn-danger" : "btn-success"}" data-agent-id="${escHtml(a.id)}" data-agent-enabled="${a.enabled ? "1" : "0"}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">${a.enabled ? "Disable" : "Enable"}</button>
+          <button class="btn btn-compact ${a.enabled ? "btn-danger" : "btn-success"}" data-agent-id="${escHtml(a.id)}" data-agent-enabled="${a.enabled ? "1" : "0"}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">${a.enabled ? "Disable" : "Enable"}</button>
           <button class="btn btn-danger" data-agent-id="${escHtml(a.id)}" data-agent-name="${escHtml(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button>
         </td>
       </tr>`;
@@ -823,7 +824,7 @@ async function refreshAgents() {
         <td>\${esc(normalizeIp(a.remoteAddress || '')) || '—'}</td>
         <td>\${hb}</td>
         <td>
-          <button class="btn \${a.enabled ? 'btn-danger' : 'btn-success'}" data-agent-id="\${esc(a.id)}" data-agent-enabled="\${a.enabled ? '1' : '0'}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">\${a.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="btn btn-compact \${a.enabled ? 'btn-danger' : 'btn-success'}" data-agent-id="\${esc(a.id)}" data-agent-enabled="\${a.enabled ? '1' : '0'}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">\${a.enabled ? 'Disable' : 'Enable'}</button>
           <button class="btn btn-danger" data-agent-id="\${esc(a.id)}" data-agent-name="\${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button>
         </td>
       </tr>\`;
@@ -972,7 +973,11 @@ function renderGroups() {
   AGENTS.forEach(a => { agentName[a.id] = a.name; });
   agentName[''] = 'Unassigned';
 
-  const orderedAgentIds = [...AGENTS.map(a => a.id), ...Object.keys(byAgent).filter(id => !agentName[id])];
+  const orderedAgentIds = [
+    '',
+    ...AGENTS.map(a => a.id),
+    ...Object.keys(byAgent).filter(id => id !== '' && !agentName[id]),
+  ];
   const groupsEl = document.getElementById('groups');
 
   if (!TUNNELS.length) {
@@ -1000,7 +1005,7 @@ function renderGroups() {
           <td>\${esc(t.targetHost)}:\${t.targetPort}</td>
           <td>
             <button class="btn btn-edit" onclick="openEditTunnel('\${esc(t.id)}')">Edit</button>
-            <button class="btn \${toggleClass}" onclick="toggleTunnelEnabled('\${esc(t.id)}', \${t.enabled ? 'true' : 'false'})">\${toggleLabel}</button>
+            <button class="btn btn-compact \${toggleClass}" onclick="toggleTunnelEnabled('\${esc(t.id)}', \${t.enabled ? 'true' : 'false'})">\${toggleLabel}</button>
             <button class="btn btn-danger" data-tunnel-id="\${esc(t.id)}" data-tunnel-name="\${esc(t.name)}" onclick="deleteTunnel(this.dataset.tunnelId,this.dataset.tunnelName)">Delete</button>
           </td>
         </tr>\`;
@@ -1282,10 +1287,6 @@ export function startDashboard(opts: {
 
           const updated = db.setAgentEnabled(id, body.enabled);
           if (!updated) return json({ error: "Agent not found" }, 404);
-
-          if (!body.enabled) {
-            agentManager.unregister(id);
-          }
 
           await onTunnelsChanged();
           return json({
