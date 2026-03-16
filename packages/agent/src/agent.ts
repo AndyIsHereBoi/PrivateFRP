@@ -152,7 +152,8 @@ export class Agent {
         }
 
         case MsgType.Heartbeat:
-          // Server sends keepalive heartbeats; no echo needed.
+          // Echo server timestamp so the server can measure RTT.
+          socket.write(encodeFrame(MsgType.Heartbeat, frame.body ?? {}));
           break;
 
         case MsgType.DialTcp: {

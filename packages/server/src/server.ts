@@ -202,6 +202,8 @@ export class Server {
     const remoteAddress = socket.remoteAddress ?? "unknown";
     this.agentManager.register(agentId, socket, tunnels, remoteAddress);
 
+    let lastPingTimestamp = 0;
+
     // Send a keepalive heartbeat every 5 seconds to prevent NAT/firewall timeouts.
     const heartbeatInterval = setInterval(() => {
       if (socket.destroyed) {
@@ -209,7 +211,8 @@ export class Server {
         return;
       }
       try {
-        socket.write(encodeFrame(MsgType.Heartbeat, { timestamp: Date.now() }));
+        lastPingTimestamp = Date.now();
+        socket.write(encodeFrame(MsgType.Heartbeat, { timestamp: lastPingTimestamp }));
       } catch {
         clearInterval(heartbeatInterval);
       }
@@ -220,7 +223,10 @@ export class Server {
     // pushes chunks to this same decoder, so we must NOT add another one here.
     decoder.onFrame = (frame) => {
       if (frame.msgType === MsgType.Heartbeat) {
-        // Just record liveness — do NOT echo back, to avoid an infinite ping-pong loop.
+        const body = (frame.body ?? {}) as { timestamp?: unknown };
+        if (typeof body.timestamp === "number" && body.timestamp === lastPingTimestamp) {
+          this.agentManager.updateLatency(agentId, Date.now() - body.timestamp);
+        }
         this.agentManager.updateHeartbeat(agentId);
       } else {
         console.warn(`[Server] Unexpected frame on control connection: type=0x${frame.msgType.toString(16)}`);

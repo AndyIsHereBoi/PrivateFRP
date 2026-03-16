@@ -147,6 +147,14 @@ export class TunnelManager {
       }
 
       dataSocket.setNoDelay(true);
+      this.agentManager.incActiveConnections(tunnel.agentId);
+      let connectionReleased = false;
+      const releaseConnection = () => {
+        if (connectionReleased) return;
+        connectionReleased = true;
+        this.agentManager.decActiveConnections(tunnel.agentId);
+      };
+      dataSocket.once("close", releaseConnection);
 
       // Transparent byte-for-byte pipe between the external client and the
       // agent's data connection.  No framing or buffering past this point.
@@ -252,6 +260,14 @@ export class TunnelManager {
 
       session = { dataConn, lastActivity: Date.now(), idleTimer };
       sessions.set(peerAddr, session);
+      this.agentManager.incActiveConnections(tunnel.agentId);
+      let sessionReleased = false;
+      const releaseSession = () => {
+        if (sessionReleased) return;
+        sessionReleased = true;
+        this.agentManager.decActiveConnections(tunnel.agentId);
+      };
+      dataConn.once("close", releaseSession);
 
       // Forward UdpData frames from agent back to the external UDP peer
       const decoder = new FrameDecoder();

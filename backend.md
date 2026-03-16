@@ -8,6 +8,7 @@ specific implementation choices exist.
 - [Goals](#goals)
 - [High-Level Components](#high-level-components)
 - [Connection Types](#connection-types)
+- [Database Structure](#database-structure)
 - [TCP Flow](#tcp-flow)
 - [UDP Flow](#udp-flow)
 - [Why Pre-Warmed Pooling Exists](#why-pre-warmed-pooling-exists)
@@ -47,6 +48,43 @@ specific implementation choices exist.
 
 - Fallback data connection
 : On-demand TLS socket opened when no pooled socket is available.
+
+## Database Structure
+
+Storage uses a single SQLite file at `data/privatefrp.db` with WAL mode enabled.
+
+### Table: `agents`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `TEXT` | Primary key (agent ID) |
+| `name` | `TEXT` | Human-friendly dashboard label |
+| `secret` | `TEXT` | Agent authentication secret |
+| `created_at` | `INTEGER` | Unix timestamp default via `unixepoch()` |
+
+### Table: `tunnels`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `TEXT` | Primary key (tunnel ID) |
+| `name` | `TEXT` | Tunnel display name |
+| `type` | `TEXT` | `tcp` or `udp` |
+| `listen_port` | `INTEGER` | Public server-side port |
+| `target_host` | `TEXT` | Host on the agent side |
+| `target_port` | `INTEGER` | Port on the agent side |
+| `agent_id` | `TEXT` | Owning agent ID |
+| `created_at` | `INTEGER` | Unix timestamp default via `unixepoch()` |
+
+### Relationship
+
+- `tunnels.agent_id` references `agents.id`.
+- One agent can own many tunnels.
+- Deleting an agent in app logic also deletes that agent's tunnels.
+
+### Runtime behavior
+
+- Tunnel listener state is in memory; DB stores configuration/state snapshots, not live sockets.
+- On tunnel create/update/delete, server reloads listeners from DB and pushes config to connected agents.
 
 ## TCP Flow
 

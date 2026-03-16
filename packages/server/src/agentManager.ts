@@ -34,9 +34,11 @@ export interface ConnectedAgent {
   socket: net.Socket | tls.TLSSocket;
   tunnels: TunnelConfig[];
   lastHeartbeat: number;
+  lastLatencyMs: number | null;
   connectedAt: number;
   /** Remote IP of the control connection */
   remoteAddress: string;
+  activeConnections: number;
   pendingDials: Map<string, PendingDial>;
   /** Pre-warmed data connections waiting to be assigned to a tunnel request. */
   warmPool: PooledSocket[];
@@ -72,8 +74,10 @@ export class AgentManager {
       socket,
       tunnels,
       lastHeartbeat: Date.now(),
+      lastLatencyMs: null,
       connectedAt: Date.now(),
       remoteAddress,
+      activeConnections: 0,
       pendingDials: new Map(),
       warmPool: [],
     });
@@ -105,6 +109,24 @@ export class AgentManager {
   updateHeartbeat(agentId: string): void {
     const agent = this.agents.get(agentId);
     if (agent) agent.lastHeartbeat = Date.now();
+  }
+
+  updateLatency(agentId: string, latencyMs: number): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    agent.lastLatencyMs = Math.max(0, Math.round(latencyMs));
+  }
+
+  incActiveConnections(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    agent.activeConnections += 1;
+  }
+
+  decActiveConnections(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    agent.activeConnections = Math.max(0, agent.activeConnections - 1);
   }
 
   updateTunnels(agentId: string, tunnels: TunnelConfig[]): void {
