@@ -124,6 +124,10 @@ export class FrameDecoder {
    * not be used again.  The `push()` method becomes a no-op once stopped,
    * so any external reference to this decoder instance is safe to keep but
    * will have no effect.
+   *
+   * Note: JavaScript's event loop is single-threaded, so callbacks can
+   * never be executing concurrently with `detach()`.  Clearing the callback
+   * references is therefore always safe to do synchronously here.
    */
   detach(): Buffer {
     this.stopped = true;
