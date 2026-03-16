@@ -36,16 +36,16 @@ jobs:
         run: |
           mkdir -p release
 
-          bun build packages/server/src/index.ts --compile --target=bun-windows-x64 --outfile release/privatefrp-server-windows-x64.exe
-          bun build packages/agent/src/index.ts --compile --target=bun-windows-x64 --outfile release/privatefrp-agent-windows-x64.exe
+          bun build packages/server/src/index.ts --compile --target=bun-windows-x64-baseline --outfile release/privatefrp-server-windows-x64-baseline.exe
+          bun build packages/agent/src/index.ts --compile --target=bun-windows-x64-baseline --outfile release/privatefrp-agent-windows-x64-baseline.exe
 
-          bun build packages/server/src/index.ts --compile --target=bun-linux-x64 --outfile release/privatefrp-server-linux-amd64
-          bun build packages/agent/src/index.ts --compile --target=bun-linux-x64 --outfile release/privatefrp-agent-linux-amd64
+          bun build packages/server/src/index.ts --compile --target=bun-linux-x64-baseline --outfile release/privatefrp-server-linux-amd64-baseline
+          bun build packages/agent/src/index.ts --compile --target=bun-linux-x64-baseline --outfile release/privatefrp-agent-linux-amd64-baseline
 
           bun build packages/server/src/index.ts --compile --target=bun-linux-arm64 --outfile release/privatefrp-server-linux-arm64
           bun build packages/agent/src/index.ts --compile --target=bun-linux-arm64 --outfile release/privatefrp-agent-linux-arm64
 
-          chmod +x release/privatefrp-server-linux-amd64 release/privatefrp-agent-linux-amd64
+          chmod +x release/privatefrp-server-linux-amd64-baseline release/privatefrp-agent-linux-amd64-baseline
           chmod +x release/privatefrp-server-linux-arm64 release/privatefrp-agent-linux-arm64
 
       - name: Upload release assets
@@ -102,10 +102,10 @@ jobs:
             echo "${COMMITS}"
             echo
             echo "### Attached Binaries"
-            echo "- privatefrp-server-windows-x64.exe"
-            echo "- privatefrp-agent-windows-x64.exe"
-            echo "- privatefrp-server-linux-amd64"
-            echo "- privatefrp-agent-linux-amd64"
+            echo "- privatefrp-server-windows-x64-baseline.exe"
+            echo "- privatefrp-agent-windows-x64-baseline.exe"
+            echo "- privatefrp-server-linux-amd64-baseline"
+            echo "- privatefrp-agent-linux-amd64-baseline"
             echo "- privatefrp-server-linux-arm64"
             echo "- privatefrp-agent-linux-arm64"
           } > release-notes.md
@@ -116,5 +116,6 @@ jobs:
           tag_name: ${{ env.TAG_NAME }}
           name: ${{ env.TAG_NAME }}
           draft: true
+          overwrite_files: true
           body_path: release-notes.md
           files: release/*

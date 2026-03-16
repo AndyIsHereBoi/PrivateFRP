@@ -9,6 +9,7 @@ web dashboard.
 - [Highlights](#highlights)
 - [Quick Start (Docker)](#quick-start-docker)
 - [Quick Start (Local Bun)](#quick-start-local-bun)
+- [Using Release Binaries](#using-release-binaries)
 - [Dashboard Workflow](#dashboard-workflow)
 - [Typical Use Cases](#typical-use-cases)
 - [Notes](#notes)
@@ -104,6 +105,77 @@ bun run start
 cd ../agent
 bun run start
 ```
+
+## Using Release Binaries
+
+The release workflow publishes these assets:
+
+- privatefrp-server-windows-x64-baseline.exe
+- privatefrp-agent-windows-x64-baseline.exe
+- privatefrp-server-linux-amd64-baseline
+- privatefrp-agent-linux-amd64-baseline
+- privatefrp-server-linux-arm64
+- privatefrp-agent-linux-arm64
+
+Choose one server binary and one agent binary for your target OS/architecture.
+
+### 1. Download binaries from a GitHub release
+
+- Open the repository Releases page
+- Open the version you want
+- Download the server and agent assets for your platform
+
+### 2. Create env files next to each binary
+
+The binaries use the same env variables as local Bun and Docker runs.
+
+When running compiled binaries, env files are loaded from the binary directory:
+
+- Agent binary reads `agent.env`
+- Server binary reads `server.env`
+
+- Copy server.env.example to server.env
+- Copy agent.env.example to agent.env
+- Fill in values (DASHBOARD_SECRET, SERVER_HOST, AGENT_ID, AGENT_SECRET, etc.)
+
+### 3. Run on Windows (x64)
+
+PowerShell example:
+
+```powershell
+# Server host
+Copy-Item server.env.example server.env
+./privatefrp-server-windows-x64-baseline.exe
+
+# Agent host
+Copy-Item agent.env.example agent.env
+./privatefrp-agent-windows-x64-baseline.exe
+```
+
+### 4. Run on Linux (amd64 or arm64)
+
+Bash example:
+
+```bash
+# Server host
+cp server.env.example server.env
+chmod +x ./privatefrp-server-linux-amd64-baseline
+./privatefrp-server-linux-amd64-baseline
+
+# Agent host
+cp agent.env.example agent.env
+chmod +x ./privatefrp-agent-linux-amd64-baseline
+./privatefrp-agent-linux-amd64-baseline
+```
+
+For ARM64 hosts, use the arm64 binary names instead.
+
+### 5. Register agent and create tunnels
+
+- Open dashboard at http://<server-ip>:8080
+- Register agent and copy AGENT_ID and AGENT_SECRET
+- Set those values in agent.env and restart the agent binary
+- Create your TCP/UDP tunnel in the dashboard
 
 ## Dashboard Workflow
 
