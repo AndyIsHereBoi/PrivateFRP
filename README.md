@@ -32,6 +32,10 @@ bash scripts/generate-certs.sh
 ### 3. Start the server
 
 ```bash
+# Optional: copy the example env file and customise it first
+cp .env.example .env
+# then edit .env, e.g. set DASHBOARD_SECRET and PUBLIC_IP
+
 DASHBOARD_SECRET=admin:changeme docker compose up -d
 ```
 
@@ -47,7 +51,8 @@ Copy the `AGENT_ID` and `AGENT_SECRET` — the secret is shown **only once**.
 
 ### 5. Start the agent (Docker)
 
-On the machine whose services you want to expose, create a `.env` file:
+On the machine whose services you want to expose, create a `.env.agent` file
+(use `.env.agent.example` as a template):
 
 ```bash
 SERVER_HOST=your-server-ip
@@ -104,18 +109,19 @@ bash scripts/generate-certs.sh
 
 ### 3. Configure environment variables
 
-**Server** (create `packages/server/.env` or export variables):
+**Server** (create `packages/server/.env` or export variables — see `packages/server/.env.example`):
 
 ```bash
 AGENT_PORT=7000
 DASHBOARD_PORT=8080
-AGENT_TLS_CERT=./certs/server.crt
-AGENT_TLS_KEY=./certs/server.key
+AGENT_TLS_CERT=../../certs/server.crt
+AGENT_TLS_KEY=../../certs/server.key
 DASHBOARD_SECRET=admin:changeme
 DATA_DIR=./data
+PUBLIC_IP=                          # optional: public IP shown in dashboard
 ```
 
-**Agent** (create `packages/agent/.env` or export variables):
+**Agent** (create `packages/agent/.env` or export variables — see `packages/agent/.env.example`):
 
 ```bash
 SERVER_HOST=<your-server-ip>
@@ -274,6 +280,7 @@ bun run build:agent
 | `AGENT_TLS_CERT` | `/app/certs/server.crt` | Path to TLS certificate |
 | `AGENT_TLS_KEY` | `/app/certs/server.key` | Path to TLS private key |
 | `DATA_DIR` | `/app/data` | Directory for the SQLite database |
+| `PUBLIC_IP` | *(empty)* | Public IP shown in dashboard tunnel connection strings |
 
 ### Agent (`docker-compose.agent.yml`)
 
