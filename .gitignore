@@ -2,7 +2,7 @@ node_modules/
 dist/
 certs/
 data/
-.env
-*.env
+server.env
+agent.env
 bun.lockb
 bun.lock
