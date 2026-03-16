@@ -9,13 +9,12 @@ import {
   type ConfigPushBody,
   type DialTcpBody,
   type DialUdpSessionBody,
-  type HeartbeatBody,
   type TunnelConfig,
   type UdpDataBody,
   type AssignStandbyBody,
 } from "@privatefrp/shared";
 
-const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = 5_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 
@@ -122,13 +121,8 @@ export class Agent {
         }
 
         case MsgType.Heartbeat: {
-          const body = frame.body as HeartbeatBody;
-          // Echo back
-          try {
-            socket.write(encodeFrame(MsgType.Heartbeat, { timestamp: body.timestamp }));
-          } catch {
-            // ignore
-          }
+          // Server sends keepalive heartbeats; no echo needed — the agent's own
+          // heartbeat interval keeps the reverse direction alive.
           break;
         }
 
@@ -212,6 +206,12 @@ export class Agent {
   private openStandbyConnection(): void {
     if (this.stopping || !this.socket || this.socket.destroyed) return;
 
+    // Capture the control socket that owns this standby. If the control socket
+    // is replaced (agent reconnects) before this standby closes, we must NOT
+    // schedule a replenish — the new control connection calls replenishStandbyPool()
+    // itself after authentication.
+    const controlSocket = this.socket;
+
     const standby = tls.connect({
       host: this.config.serverHost,
       port: this.config.serverPort,
@@ -258,8 +258,9 @@ export class Agent {
     });
 
     standby.on("close", () => {
-      // If control socket is still alive, try to open a replacement in a moment
-      if (!this.stopping && this.socket && !this.socket.destroyed) {
+      // Only replenish if the SAME control socket is still active. If the control
+      // socket was replaced (reconnect), the new session opens its own standbys.
+      if (!this.stopping && this.socket === controlSocket && !this.socket.destroyed) {
         this.standbyReplenishTimer = setTimeout(() => this.openStandbyConnection(), 2_000);
       }
     });

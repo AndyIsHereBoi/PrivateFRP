@@ -8,7 +8,6 @@ import {
   type AgentHelloBody,
   type DataConnHelloBody,
   type StandbyHelloBody,
-  type HeartbeatBody,
   type TunnelConfig,
 } from "@privatefrp/shared";
 import type { DB } from "./db";
@@ -187,7 +186,7 @@ export class Server {
     const remoteAddress = socket.remoteAddress ?? "unknown";
     this.agentManager.register(agentId, socket, tunnels, remoteAddress);
 
-    // Start heartbeat
+    // Send a keepalive heartbeat every 5 seconds to prevent NAT/firewall timeouts.
     const heartbeatInterval = setInterval(() => {
       if (socket.destroyed) {
         clearInterval(heartbeatInterval);
@@ -198,19 +197,15 @@ export class Server {
       } catch {
         clearInterval(heartbeatInterval);
       }
-    }, 30_000);
+    }, 5_000);
 
-    // Handle frames from this control connection
+    // Handle frames from this control connection.
+    // NOTE: the data listener from handleIncomingConnection() is still active and
+    // pushes chunks to this same decoder, so we must NOT add another one here.
     decoder.onFrame = (frame) => {
       if (frame.msgType === MsgType.Heartbeat) {
-        const body = frame.body as HeartbeatBody;
+        // Just record liveness — do NOT echo back, to avoid an infinite ping-pong loop.
         this.agentManager.updateHeartbeat(agentId);
-        // Echo heartbeat back
-        try {
-          socket.write(encodeFrame(MsgType.Heartbeat, { timestamp: body.timestamp }));
-        } catch {
-          // ignore
-        }
       } else {
         console.warn(`[Server] Unexpected frame on control connection: type=0x${frame.msgType.toString(16)}`);
       }
@@ -220,8 +215,6 @@ export class Server {
       console.error(`[Server] Control connection decoder error for agent ${agentId}:`, err);
       socket.destroy();
     };
-
-    socket.on("data", (chunk) => decoder.push(chunk));
 
     socket.on("close", () => {
       clearInterval(heartbeatInterval);
