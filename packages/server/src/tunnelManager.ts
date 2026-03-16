@@ -17,7 +17,8 @@ function isExpectedDialError(err: unknown): boolean {
   return (
     msg.includes("not connected") ||
     msg.includes("timeout") ||
-    msg.includes("disconnected")
+    msg.includes("disconnected") ||
+    msg.includes("Too many pending dials")
   );
 }
 

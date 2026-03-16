@@ -8,6 +8,10 @@ export const MsgType = {
   DialUdpSession: 0x06,
   DataConnHello: 0x07,
   UdpData: 0x08,
+  /** Agent → Server: offer a pre-warmed data connection into the server's pool */
+  PoolHello: 0x09,
+  /** Server → Agent: assign a pooled data connection to a specific tunnel request */
+  DialAssign: 0x0a,
 } as const;
 
 export type MsgTypeValue = (typeof MsgType)[keyof typeof MsgType];
@@ -62,6 +66,15 @@ export interface DataConnHelloBody {
 export interface UdpDataBody {
   peerAddr: string;
   payload: string; // base64
+}
+
+export interface PoolHelloBody {
+  agentId: string;
+}
+
+export interface DialAssignBody {
+  requestId: string;
+  tunnelId: string;
 }
 
 // ─── Frame encoder ────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import {
   type ConfigPushBody,
   type DialTcpBody,
   type DialUdpSessionBody,
+  type DialAssignBody,
   type TunnelConfig,
   type UdpDataBody,
 } from "@privatefrp/shared";
@@ -16,6 +17,14 @@ import {
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
+
+/**
+ * Number of pre-warmed TLS data connections to keep ready at all times.
+ * When one is consumed by an incoming tunnel request the pool is immediately
+ * replenished in the background, so the next request has zero handshake
+ * overhead to pay.
+ */
+const POOL_SIZE = 5;
 
 export interface AgentConfig {
   serverHost: string;
@@ -32,8 +41,25 @@ export class Agent {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
-  /** Cached TLS session for data connections — avoids a full handshake on every dial. */
+
+  /**
+   * Cached TLS session shared across all data/pool connections.
+   * After the very first handshake, every subsequent connection
+   * resumes it and skips the full RTT.
+   */
   private dataConnSession: Buffer | null = null;
+
+  /**
+   * Number of pool connections currently open or being established.
+   * Tracks whether we need to open more.
+   */
+  private activePoolConnections = 0;
+
+  /**
+   * True only while the control socket is authenticated.
+   * Pool maintenance is suspended during reconnects.
+   */
+  private poolEnabled = false;
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -45,11 +71,16 @@ export class Agent {
 
   stop(): void {
     this.stopping = true;
+    this.poolEnabled = false;
     this.socket?.destroy();
   }
 
   private connect(): void {
     if (this.stopping) return;
+
+    // Reset pool state for the new session
+    this.poolEnabled = false;
+    this.activePoolConnections = 0;
 
     console.log(
       `[Agent] Connecting to ${this.config.serverHost}:${this.config.serverPort}...`,
@@ -71,7 +102,6 @@ export class Agent {
 
     socket.on("secureConnect", () => {
       console.log("[Agent] TLS connected");
-      // Send AgentHello
       socket.write(
         encodeFrame(MsgType.AgentHello, {
           agentId: this.config.agentId,
@@ -98,6 +128,9 @@ export class Agent {
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
           this.startHeartbeat(socket);
+          // Start pre-warming connections now that we are authenticated
+          this.poolEnabled = true;
+          this.maintainPool();
           break;
         }
 
@@ -108,11 +141,9 @@ export class Agent {
           break;
         }
 
-        case MsgType.Heartbeat: {
-          // Server sends keepalive heartbeats; no echo needed — the agent's own
-          // heartbeat interval keeps the reverse direction alive.
+        case MsgType.Heartbeat:
+          // Server sends keepalive heartbeats; no echo needed.
           break;
-        }
 
         case MsgType.DialTcp: {
           const body = frame.body as DialTcpBody;
@@ -134,6 +165,7 @@ export class Agent {
     };
 
     socket.on("close", () => {
+      this.poolEnabled = false;
       this.cleanupHeartbeat();
       if (!this.stopping) {
         console.log(`[Agent] Disconnected. Reconnecting in ${this.reconnectDelay}ms...`);
@@ -175,7 +207,146 @@ export class Agent {
     return this.tunnels.find((t) => t.id === tunnelId);
   }
 
-  // ─── TCP dial handling ──────────────────────────────────────────────────────
+  // ─── Warm connection pool ───────────────────────────────────────────────────
+
+  /**
+   * Ensure we always have POOL_SIZE pre-warmed connections in the server's
+   * pool.  Called after authentication and after each pool socket is consumed
+   * or lost.
+   */
+  private maintainPool(): void {
+    while (this.poolEnabled && this.activePoolConnections < POOL_SIZE) {
+      this.activePoolConnections++;
+      this.openPoolConnection();
+    }
+  }
+
+  /**
+   * Open one pre-warmed TLS connection to the server and register it in the
+   * server's pool via a PoolHello message.  The connection then sits idle,
+   * waiting for a DialAssign frame that tells it which tunnel to serve.
+   */
+  private openPoolConnection(): void {
+    if (this.stopping || !this.socket || this.socket.destroyed) {
+      this.activePoolConnections = Math.max(0, this.activePoolConnections - 1);
+      return;
+    }
+
+    const conn = tls.connect({
+      host: this.config.serverHost,
+      port: this.config.serverPort,
+      rejectUnauthorized: this.config.tlsRejectUnauthorized,
+      session: this.dataConnSession ?? undefined,
+    });
+
+    conn.once("session", (session) => {
+      this.dataConnSession = session;
+    });
+
+    // Whether we have already decremented activePoolConnections for this conn.
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      this.activePoolConnections = Math.max(0, this.activePoolConnections - 1);
+      // Immediately try to replenish so the pool stays at target size
+      if (this.poolEnabled) this.maintainPool();
+    };
+
+    // If the connection dies before being assigned, release the slot
+    conn.on("close", release);
+
+    conn.on("error", (err) => {
+      console.error("[Agent] Pool connection error:", err.message);
+      // 'close' will fire after 'error' and call release()
+    });
+
+    conn.once("secureConnect", () => {
+      conn.write(
+        encodeFrame(MsgType.PoolHello, { agentId: this.config.agentId }),
+      );
+
+      // Wait for a single DialAssign frame telling us which tunnel to serve
+      const decoder = new FrameDecoder();
+      decoder.onError = (err) => {
+        console.error("[Agent] Pool connection decoder error:", err);
+        conn.destroy();
+      };
+
+      const onData = (chunk: Buffer) => decoder.push(chunk);
+      conn.on("data", onData);
+
+      decoder.onFrame = (frame) => {
+        if (frame.msgType !== MsgType.DialAssign) {
+          console.warn(
+            `[Agent] Pool connection: unexpected frame 0x${frame.msgType.toString(16)}`,
+          );
+          conn.destroy();
+          return;
+        }
+
+        const body = frame.body as DialAssignBody;
+
+        // Switch from framed mode to raw pipe mode
+        const leftover = decoder.detach();
+        conn.removeListener("data", onData);
+        if (leftover.length > 0) conn.unshift(leftover);
+
+        // Remove the 'close' release listener — we own this socket now
+        conn.removeListener("close", release);
+        released = true;
+        // Replenish the pool immediately so the next request has a warm socket
+        this.activePoolConnections = Math.max(0, this.activePoolConnections - 1);
+        if (this.poolEnabled) this.maintainPool();
+
+        const tunnel = this.findTunnel(body.tunnelId);
+        if (!tunnel) {
+          console.warn(`[Agent] DialAssign: unknown tunnel ${body.tunnelId}`);
+          conn.destroy();
+          return;
+        }
+
+        console.log(
+          `[Agent] DialAssign requestId=${body.requestId} -> ${tunnel.targetHost}:${tunnel.targetPort}`,
+        );
+
+        this.connectToTarget(conn, tunnel.targetHost, tunnel.targetPort, body.requestId);
+      };
+    });
+  }
+
+  /**
+   * Connect to the local target service and join the two sockets into a
+   * bidirectional pipe.  Used by both the pool path (DialAssign) and the
+   * on-demand fallback path (DialTcp → DataConnHello).
+   */
+  private connectToTarget(
+    dataConn: tls.TLSSocket | net.Socket,
+    targetHost: string,
+    targetPort: number,
+    requestId: string,
+  ): void {
+    const target = net.createConnection({ host: targetHost, port: targetPort });
+
+    target.once("connect", () => {
+      dataConn.pipe(target);
+      target.pipe(dataConn);
+
+      dataConn.on("error", () => target.destroy());
+      target.on("error", () => dataConn.destroy());
+      dataConn.on("close", () => target.destroy());
+      target.on("close", () => dataConn.destroy());
+    });
+
+    target.on("error", (err) => {
+      console.error(
+        `[Agent] Target connection error (requestId=${requestId}): ${err.message}`,
+      );
+      dataConn.destroy();
+    });
+  }
+
+  // ─── On-demand TCP dial (slow-path fallback) ────────────────────────────────
 
   private handleDialTcp(body: DialTcpBody): void {
     const tunnel = this.findTunnel(body.tunnelId);
@@ -185,11 +356,9 @@ export class Agent {
     }
 
     console.log(
-      `[Agent] DialTcp requestId=${body.requestId} -> ${tunnel.targetHost}:${tunnel.targetPort}`,
+      `[Agent] DialTcp (fallback) requestId=${body.requestId} -> ${tunnel.targetHost}:${tunnel.targetPort}`,
     );
 
-    // Open data connection to server, reusing a cached TLS session when
-    // available so subsequent dials skip the full handshake round-trip.
     const dataConn = tls.connect({
       host: this.config.serverHost,
       port: this.config.serverPort,
@@ -197,41 +366,22 @@ export class Agent {
       session: this.dataConnSession ?? undefined,
     });
 
-    dataConn.once("session", (session) => { this.dataConnSession = session; });
+    dataConn.once("session", (session) => {
+      this.dataConnSession = session;
+    });
 
     dataConn.once("secureConnect", () => {
-      // Send DataConnHello
       dataConn.write(
         encodeFrame(MsgType.DataConnHello, {
           requestId: body.requestId,
           agentId: this.config.agentId,
         }),
       );
-
-      // Connect to local target
-      const target = net.createConnection({
-        host: tunnel.targetHost,
-        port: tunnel.targetPort,
-      });
-
-      target.once("connect", () => {
-        dataConn.pipe(target);
-        target.pipe(dataConn);
-
-        dataConn.on("error", () => target.destroy());
-        target.on("error", () => dataConn.destroy());
-        dataConn.on("close", () => target.destroy());
-        target.on("close", () => dataConn.destroy());
-      });
-
-      target.on("error", (err) => {
-        console.error(`[Agent] TCP target connection error:`, err.message);
-        dataConn.destroy();
-      });
+      this.connectToTarget(dataConn, tunnel.targetHost, tunnel.targetPort, body.requestId);
     });
 
     dataConn.on("error", (err) => {
-      console.error(`[Agent] Data connection error for requestId=${body.requestId}:`, err.message);
+      console.error(`[Agent] Fallback data connection error (requestId=${body.requestId}): ${err.message}`);
     });
   }
 
@@ -250,8 +400,6 @@ export class Agent {
 
     const udpSock = dgram.createSocket("udp4");
     udpSock.bind(() => {
-      // Open data connection to server, reusing a cached TLS session when
-      // available so subsequent dials skip the full handshake round-trip.
       const dataConn = tls.connect({
         host: this.config.serverHost,
         port: this.config.serverPort,
@@ -259,7 +407,9 @@ export class Agent {
         session: this.dataConnSession ?? undefined,
       });
 
-      dataConn.once("session", (session) => { this.dataConnSession = session; });
+      dataConn.once("session", (session) => {
+        this.dataConnSession = session;
+      });
 
       dataConn.once("secureConnect", () => {
         dataConn.write(
@@ -271,7 +421,6 @@ export class Agent {
 
         const decoder = new FrameDecoder();
 
-        // Forward UdpData frames from server to local UDP target
         decoder.onFrame = (frame) => {
           if (frame.msgType !== MsgType.UdpData) return;
           const udpBody = frame.body as UdpDataBody;
@@ -286,23 +435,20 @@ export class Agent {
 
         dataConn.on("data", (chunk: Buffer) => decoder.push(chunk));
 
-        // Forward UDP responses from local target back to server
         udpSock.on("message", (msg) => {
-          const frame = encodeFrame(MsgType.UdpData, {
-            peerAddr: body.peerAddr,
-            payload: msg.toString("base64"),
-          });
           try {
-            dataConn.write(frame);
+            dataConn.write(
+              encodeFrame(MsgType.UdpData, {
+                peerAddr: body.peerAddr,
+                payload: msg.toString("base64"),
+              }),
+            );
           } catch {
-            // ignore
+            // ignore write errors on a dying socket
           }
         });
 
-        dataConn.on("close", () => {
-          udpSock.close();
-        });
-
+        dataConn.on("close", () => udpSock.close());
         dataConn.on("error", (err) => {
           console.error(`[Agent] UDP data conn error:`, err.message);
           udpSock.close();
@@ -311,8 +457,7 @@ export class Agent {
 
       dataConn.on("error", (err) => {
         console.error(
-          `[Agent] Data connection error for UDP requestId=${body.requestId}:`,
-          err.message,
+          `[Agent] UDP data connection error (requestId=${body.requestId}): ${err.message}`,
         );
         udpSock.close();
       });

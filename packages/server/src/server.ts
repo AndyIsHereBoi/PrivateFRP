@@ -7,6 +7,7 @@ import {
   MsgType,
   type AgentHelloBody,
   type DataConnHelloBody,
+  type PoolHelloBody,
   type TunnelConfig,
 } from "@privatefrp/shared";
 import type { DB } from "./db";
@@ -130,6 +131,15 @@ export class Server {
         // so that the pipe picks them up as the first data.
         if (leftover.length > 0) socket.unshift(leftover);
         this.handleDataConnection(socket, frame.body as DataConnHelloBody);
+      } else if (frame.msgType === MsgType.PoolHello) {
+        // Pre-warmed pool connection from the agent — hand off to the pool.
+        // Switch to raw mode exactly as with DataConnHello; the socket will
+        // be written to directly when a client connects (DialAssign + pipe).
+        const leftover = decoder.detach();
+        socket.removeListener("data", onData);
+        if (leftover.length > 0) socket.unshift(leftover);
+        const body = frame.body as PoolHelloBody;
+        this.agentManager.addToPool(body.agentId, socket);
       } else {
         console.warn("[Server] Unknown first frame type:", frame.msgType);
         socket.destroy();
