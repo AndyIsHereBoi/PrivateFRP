@@ -32,6 +32,8 @@ export class Agent {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private stopping = false;
+  /** Cached TLS session for data connections — avoids a full handshake on every dial. */
+  private dataConnSession: Buffer | null = null;
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -186,12 +188,16 @@ export class Agent {
       `[Agent] DialTcp requestId=${body.requestId} -> ${tunnel.targetHost}:${tunnel.targetPort}`,
     );
 
-    // Open data connection to server
+    // Open data connection to server, reusing a cached TLS session when
+    // available so subsequent dials skip the full handshake round-trip.
     const dataConn = tls.connect({
       host: this.config.serverHost,
       port: this.config.serverPort,
       rejectUnauthorized: this.config.tlsRejectUnauthorized,
+      session: this.dataConnSession ?? undefined,
     });
+
+    dataConn.once("session", (session) => { this.dataConnSession = session; });
 
     dataConn.once("secureConnect", () => {
       // Send DataConnHello
@@ -244,12 +250,16 @@ export class Agent {
 
     const udpSock = dgram.createSocket("udp4");
     udpSock.bind(() => {
-      // Open data connection to server
+      // Open data connection to server, reusing a cached TLS session when
+      // available so subsequent dials skip the full handshake round-trip.
       const dataConn = tls.connect({
         host: this.config.serverHost,
         port: this.config.serverPort,
         rejectUnauthorized: this.config.tlsRejectUnauthorized,
+        session: this.dataConnSession ?? undefined,
       });
+
+      dataConn.once("session", (session) => { this.dataConnSession = session; });
 
       dataConn.once("secureConnect", () => {
         dataConn.write(

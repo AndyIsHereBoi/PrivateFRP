@@ -116,12 +116,33 @@ export class TunnelManager {
       `[TunnelManager] Inbound TCP on tunnel "${tunnel.name}", requestId=${requestId}`,
     );
 
+    // Track early client disconnect so we can bail after the async dial and
+    // avoid leaking the data socket.  Also absorb any error that fires before
+    // we have a chance to install a real handler — without this, Node.js would
+    // throw an unhandled 'error' event and crash the process.
+    let clientGone = false;
+    const onEarlyClose = () => { clientGone = true; };
+    const onEarlyError = () => { clientGone = true; };
+    clientSocket.once("close", onEarlyClose);
+    clientSocket.once("error", onEarlyError);
+
     try {
       const dataSocket = await this.agentManager.dialTcp(
         tunnel.agentId,
         requestId,
         tunnel.id,
       );
+
+      // Remove the temporary handlers before installing the permanent ones.
+      clientSocket.removeListener("close", onEarlyClose);
+      clientSocket.removeListener("error", onEarlyError);
+
+      // If the client went away while we were dialling, don't leak the data
+      // socket — destroy it immediately and return.
+      if (clientGone || clientSocket.destroyed) {
+        dataSocket.destroy();
+        return;
+      }
 
       // Pipe the client and agent data connection together
       clientSocket.pipe(dataSocket);
@@ -132,6 +153,8 @@ export class TunnelManager {
       clientSocket.on("close", () => dataSocket.destroy());
       dataSocket.on("close", () => clientSocket.destroy());
     } catch (err) {
+      clientSocket.removeListener("close", onEarlyClose);
+      clientSocket.removeListener("error", onEarlyError);
       const msg = err instanceof Error ? err.message : String(err);
       if (isExpectedDialError(err)) {
         console.warn(
@@ -140,7 +163,7 @@ export class TunnelManager {
       } else {
         console.error(`[TunnelManager] Dial failed for requestId=${requestId}: ${msg}`);
       }
-      clientSocket.destroy();
+      if (!clientGone) clientSocket.destroy();
     }
   }
 
