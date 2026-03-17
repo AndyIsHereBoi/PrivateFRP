@@ -69,8 +69,9 @@ export class Server {
         .filter((a) => !!a.enabled)
         .map((a) => a.id),
     );
+    const connectedAgentIds = new Set(this.agentManager.getAll().map((a) => a.agentId));
     const assignedTunnels: TunnelConfig[] = rows
-      .filter((r) => !!r.agent_id && !!r.enabled && enabledAgentIds.has(r.agent_id))
+      .filter((r) => !!r.agent_id && !!r.enabled && enabledAgentIds.has(r.agent_id) && connectedAgentIds.has(r.agent_id))
       .map((r) => this.db.rowToTunnelConfig(r));
     await this.tunnelManager.syncTunnels(assignedTunnels);
 
@@ -242,6 +243,9 @@ export class Server {
     );
 
     this.agentManager.register(agentId, socket, tunnels, remoteAddress);
+    void this.reloadTunnels().catch((err) => {
+      tunnelLog.error(`[Server] Failed to reload tunnels after agent connect (${agentId}):`, err);
+    });
 
     let lastPingTimestamp = 0;
 
@@ -283,6 +287,9 @@ export class Server {
       clearInterval(heartbeatInterval);
       this.agentManager.unregister(agentId);
       tunnelLog.log(`[Server] Agent disconnected: ${agentId}`);
+      void this.reloadTunnels().catch((err) => {
+        tunnelLog.error(`[Server] Failed to reload tunnels after agent disconnect (${agentId}):`, err);
+      });
     });
 
     socket.on("error", (err) => {
