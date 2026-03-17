@@ -467,6 +467,92 @@ function pageShell(opts: {
 <div class="container">
   ${opts.content}
 </div>
+<script>
+(() => {
+  const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl = wsProtocol + '://' + location.host + '/ws/dashboard';
+  let ws = null;
+  let connectPromise = null;
+  let reqSeq = 0;
+  const pending = new Map();
+
+  function rejectAllPending(reason) {
+    for (const [, entry] of pending) {
+      clearTimeout(entry.timeout);
+      entry.reject(new Error(reason));
+    }
+    pending.clear();
+  }
+
+  function openSocket() {
+    if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(ws);
+    if (connectPromise) return connectPromise;
+
+    connectPromise = new Promise((resolve, reject) => {
+      const socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        ws = socket;
+        connectPromise = null;
+        resolve(socket);
+      };
+
+      socket.onmessage = (event) => {
+        let msg;
+        try {
+          msg = JSON.parse(String(event.data || '{}'));
+        } catch {
+          return;
+        }
+
+        const reqId = typeof msg.reqId === 'string' ? msg.reqId : '';
+        if (!reqId) return;
+
+        const entry = pending.get(reqId);
+        if (!entry) return;
+        pending.delete(reqId);
+        clearTimeout(entry.timeout);
+
+        if (msg.ok === false) {
+          entry.reject(new Error(String(msg.error || 'WebSocket request failed')));
+          return;
+        }
+
+        entry.resolve(msg.data);
+      };
+
+      socket.onerror = () => {
+        if (connectPromise) {
+          connectPromise = null;
+          reject(new Error('WebSocket connection failed'));
+        }
+      };
+
+      socket.onclose = () => {
+        ws = null;
+        rejectAllPending('WebSocket disconnected');
+      };
+    });
+
+    return connectPromise;
+  }
+
+  window.dashboardWsRequest = async function(type, payload) {
+    const socket = await openSocket();
+    const reqId = 'req-' + (++reqSeq) + '-' + Date.now();
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pending.delete(reqId);
+        reject(new Error('WebSocket request timeout'));
+      }, 10000);
+
+      pending.set(reqId, { resolve, reject, timeout });
+      socket.send(JSON.stringify({ reqId, type, payload: payload || {} }));
+    });
+  };
+})();
+</script>
 </body></html>`;
 }
 
@@ -657,10 +743,15 @@ async function refreshTraffic() {
     const tunnelDir = document.getElementById('tunnel-dir').value;
     const ipSort = document.getElementById('ip-sort').value;
     const ipDir = document.getElementById('ip-dir').value;
-    const params = new URLSearchParams({ window, tunnelSort, tunnelDir, ipSort, ipDir });
-    const res = await fetch('/api/traffic?' + params.toString());
-    if (!res.ok) return;
-    const payload = await res.json();
+    let payload;
+    try {
+      payload = await window.dashboardWsRequest('traffic', { window, tunnelSort, tunnelDir, ipSort, ipDir });
+    } catch {
+      const params = new URLSearchParams({ window, tunnelSort, tunnelDir, ipSort, ipDir });
+      const res = await fetch('/api/traffic?' + params.toString());
+      if (!res.ok) return;
+      payload = await res.json();
+    }
     const tunnels = Array.isArray(payload) ? payload : (payload.tunnels || []);
     const topIps = Array.isArray(payload) ? [] : (payload.topIps || []);
     const ipTbody = document.getElementById('top-ips-tbody');
@@ -803,9 +894,14 @@ function normalizeIp(ip) {
 }
 async function refreshAgents() {
   try {
-    const res = await fetch('/api/agents');
-    if (!res.ok) return;
-    const agents = await res.json();
+    let agents;
+    try {
+      agents = await window.dashboardWsRequest('agents', {});
+    } catch {
+      const res = await fetch('/api/agents');
+      if (!res.ok) return;
+      agents = await res.json();
+    }
     const tbody = document.getElementById('agents-tbody');
     if (!agents.length) {
       tbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center">No agents registered</td></tr>';
@@ -1103,13 +1199,22 @@ async function toggleTunnelEnabled(id, currentlyEnabled) {
 
 async function refreshData() {
   try {
-    const [agentsRes, tunnelsRes] = await Promise.all([
-      fetch('/api/agents'),
-      fetch('/api/tunnels')
-    ]);
-    if (!agentsRes.ok || !tunnelsRes.ok) return;
-    AGENTS = await agentsRes.json();
-    TUNNELS = await tunnelsRes.json();
+    try {
+      const [agents, tunnels] = await Promise.all([
+        window.dashboardWsRequest('agents', {}),
+        window.dashboardWsRequest('tunnels', {}),
+      ]);
+      AGENTS = agents;
+      TUNNELS = tunnels;
+    } catch {
+      const [agentsRes, tunnelsRes] = await Promise.all([
+        fetch('/api/agents'),
+        fetch('/api/tunnels')
+      ]);
+      if (!agentsRes.ok || !tunnelsRes.ok) return;
+      AGENTS = await agentsRes.json();
+      TUNNELS = await tunnelsRes.json();
+    }
     updateAgentSelects();
     renderGroups();
   } catch (_) {}
@@ -1121,6 +1226,48 @@ setInterval(refreshData, 1000);
 `,
   });
 }
+
+function buildAgentsPayload(db: DB, agentManager: AgentManager): Array<{
+  id: string;
+  name: string;
+  enabled: boolean;
+  connected: boolean;
+  activeConnections: number;
+  remoteAddress: string | null;
+  lastHeartbeat: number | null;
+  createdAt: number;
+}> {
+  const dbAgents = db.listAgents();
+  const connectedMap = new Map(agentManager.getAll().map((a) => [a.agentId, a]));
+  return dbAgents.map((a) => {
+    const connected = connectedMap.get(a.id);
+    return {
+      id: a.id,
+      name: a.name,
+      enabled: !!a.enabled,
+      connected: !!connected && !!a.enabled,
+      activeConnections: connected?.activeConnections ?? 0,
+      remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? null),
+      lastHeartbeat: connected?.lastHeartbeat ?? null,
+      createdAt: a.created_at,
+    };
+  });
+}
+
+function buildTunnelsPayload(db: DB): Array<ReturnType<DB["rowToTunnelConfig"]> & { enabled: boolean }> {
+  return db.listTunnels().map((t) => ({
+    ...db.rowToTunnelConfig(t),
+    enabled: !!t.enabled,
+  }));
+}
+
+type DashboardWsRequest = {
+  reqId?: unknown;
+  type?: unknown;
+  payload?: unknown;
+};
+
+type DashboardWsData = { user: string };
 
 export function startDashboard(opts: {
   port: number;
@@ -1134,6 +1281,56 @@ export function startDashboard(opts: {
 
   Bun.serve({
     port,
+    websocket: {
+      async message(ws, message) {
+        const send = (body: unknown) => ws.send(JSON.stringify(body));
+
+        let req: DashboardWsRequest;
+        try {
+          req = JSON.parse(String(message));
+        } catch {
+          send({ ok: false, error: "Invalid JSON" });
+          return;
+        }
+
+        const reqId = typeof req.reqId === "string" ? req.reqId : "";
+        const reqType = typeof req.type === "string" ? req.type : "";
+        const payload = (req.payload ?? {}) as Record<string, unknown>;
+        if (!reqId || !reqType) {
+          send({ reqId, ok: false, error: "Missing reqId or type" });
+          return;
+        }
+
+        try {
+          if (reqType === "agents") {
+            send({ reqId, ok: true, data: buildAgentsPayload(db, agentManager) });
+            return;
+          }
+
+          if (reqType === "tunnels") {
+            send({ reqId, ok: true, data: buildTunnelsPayload(db) });
+            return;
+          }
+
+          if (reqType === "traffic") {
+            const window = parseTrafficWindow(typeof payload.window === "string" ? payload.window : null);
+            const tunnelSort = parseTunnelSort(typeof payload.tunnelSort === "string" ? payload.tunnelSort : null);
+            const tunnelDir = parseSortDir(typeof payload.tunnelDir === "string" ? payload.tunnelDir : null);
+            const ipSort = parseIpSort(typeof payload.ipSort === "string" ? payload.ipSort : null);
+            const ipDir = parseSortDir(typeof payload.ipDir === "string" ? payload.ipDir : null);
+
+            const traffic = await buildTrafficPayload(db, { window, tunnelSort, tunnelDir, ipSort, ipDir });
+            send({ reqId, ok: true, data: traffic });
+            return;
+          }
+
+          send({ reqId, ok: false, error: "Unknown request type" });
+        } catch (err) {
+          webLog.error(`[Dashboard] websocket ${reqType} failed:`, err);
+          send({ reqId, ok: false, error: "Internal server error" });
+        }
+      },
+    },
     async fetch(req: Request, server: ReturnType<typeof Bun.serve>) {
       const method = req.method || "GET";
       const ip = getRequestIp(req, (request) => {
@@ -1206,6 +1403,15 @@ export function startDashboard(opts: {
           });
         }
 
+        if (url.pathname === "/ws/dashboard") {
+          const user = validateSession(cookie);
+          if (!user) return new Response("Unauthorized", { status: 401 });
+
+          const upgraded = server.upgrade<DashboardWsData>(req, { data: { user } });
+          if (upgraded) return;
+          return new Response("WebSocket upgrade failed", { status: 500 });
+        }
+
         const user = validateSession(cookie);
         if (!user) {
           if (url.pathname.startsWith("/api/")) return json({ error: "Unauthorized" }, 401);
@@ -1213,18 +1419,15 @@ export function startDashboard(opts: {
         }
 
         if ((url.pathname === "/dashboard" || url.pathname === "/dashboard/agents") && req.method === "GET") {
-        const dbAgents = db.listAgents();
-        const connectedMap = new Map(agentManager.getAll().map((a) => [a.agentId, a]));
-        const agentsView = dbAgents.map((a) => {
-          const connected = connectedMap.get(a.id);
+        const agentsView = buildAgentsPayload(db, agentManager).map((a) => {
           return {
             id: a.id,
             name: a.name,
-            enabled: !!a.enabled,
-            connected: !!connected && !!a.enabled,
-            activeConnections: connected?.activeConnections ?? 0,
-            lastHeartbeat: connected?.lastHeartbeat ?? 0,
-            remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? ""),
+            enabled: a.enabled,
+            connected: a.connected,
+            activeConnections: a.activeConnections,
+            lastHeartbeat: a.lastHeartbeat ?? 0,
+            remoteAddress: a.remoteAddress ?? "",
           };
         });
         return html(agentsPage(agentsView, publicIp));
@@ -1257,23 +1460,7 @@ export function startDashboard(opts: {
         }
 
         if (url.pathname === "/api/agents" && req.method === "GET") {
-        const dbAgents = db.listAgents();
-        const connectedMap = new Map(agentManager.getAll().map((a) => [a.agentId, a]));
-        return json(
-          dbAgents.map((a) => {
-            const connected = connectedMap.get(a.id);
-            return {
-              id: a.id,
-              name: a.name,
-              enabled: !!a.enabled,
-              connected: !!connected && !!a.enabled,
-              activeConnections: connected?.activeConnections ?? 0,
-              remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? null),
-              lastHeartbeat: connected?.lastHeartbeat ?? null,
-              createdAt: a.created_at,
-            };
-          }),
-        );
+        return json(buildAgentsPayload(db, agentManager));
         }
 
         const setAgentEnabledMatch = req.method === "POST"
@@ -1309,12 +1496,7 @@ export function startDashboard(opts: {
         }
 
         if (url.pathname === "/api/tunnels" && req.method === "GET") {
-          return json(
-            db.listTunnels().map((t) => ({
-              ...db.rowToTunnelConfig(t),
-              enabled: !!t.enabled,
-            })),
-          );
+          return json(buildTunnelsPayload(db));
         }
 
         if (url.pathname === "/api/traffic" && req.method === "GET") {
