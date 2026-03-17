@@ -397,6 +397,10 @@ const CSS = `
   .code-block { background:#0f172a; border:1px solid #334155; border-radius:6px; padding:1rem; font-family:monospace; font-size:0.85rem; word-break:break-all; color:#4ade80; margin:0.5rem 0 1rem; }
   .mt-1 { margin-top:0.5rem; }
   .actions { display:flex; gap:0.5rem; }
+  .toast-wrap { position: fixed; top: 88px; right: 16px; z-index: 1000; display:flex; flex-direction:column; gap:0.5rem; max-width:420px; }
+  .toast { border-radius:8px; border:1px solid #334155; background:#1e293b; color:#e2e8f0; padding:0.75rem 0.9rem; box-shadow: 0 8px 24px rgba(0,0,0,0.35); font-size:0.88rem; }
+  .toast.error { border-color:#7f1d1d; background:#3f1212; color:#fecaca; }
+  .toast.success { border-color:#14532d; background:#0f2d1f; color:#86efac; }
 `;
 
 function escHtml(str: string): string {
@@ -467,6 +471,7 @@ function pageShell(opts: {
 <div class="container">
   ${opts.content}
 </div>
+<div id="toast-wrap" class="toast-wrap" aria-live="polite" aria-atomic="true"></div>
 <script>
 (() => {
   const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -550,6 +555,18 @@ function pageShell(opts: {
       pending.set(reqId, { resolve, reject, timeout });
       socket.send(JSON.stringify({ reqId, type, payload: payload || {} }));
     });
+  };
+
+  window.showToast = function(message, kind) {
+    const wrap = document.getElementById('toast-wrap');
+    if (!wrap) return;
+    const el = document.createElement('div');
+    el.className = 'toast ' + (kind === 'success' ? 'success' : 'error');
+    el.textContent = String(message || 'Unexpected error');
+    wrap.appendChild(el);
+    setTimeout(() => {
+      el.remove();
+    }, 4200);
   };
 })();
 </script>
@@ -938,7 +955,7 @@ async function toggleAgentEnabled(id, enabledFlag) {
     body: JSON.stringify({ enabled: !currentlyEnabled }),
   });
   if (!res.ok) {
-    alert('Failed to update agent state');
+    window.showToast('Failed to update agent state');
     return;
   }
   await refreshAgents();
@@ -947,7 +964,7 @@ async function toggleAgentEnabled(id, enabledFlag) {
 async function deleteAgent(id, name) {
   if (!confirm("Delete agent '" + name + "'? This will unassign its tunnels.")) return;
   const res = await fetch('/api/agents/' + encodeURIComponent(id) + '/delete', { method: 'POST' });
-  if (!res.ok) { alert('Failed to delete agent'); return; }
+  if (!res.ok) { window.showToast('Failed to delete agent'); return; }
   await refreshAgents();
 }
 
@@ -1151,7 +1168,7 @@ async function saveTunnelEdit(e) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Update failed' }));
-    alert('Error: ' + (err.error || res.status));
+    window.showToast('Error: ' + (err.error || res.status));
     return;
   }
   document.getElementById('editTunnelModal').classList.remove('open');
@@ -1171,14 +1188,14 @@ async function createTunnel(e) {
     await refreshData();
   } else {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    alert('Error: ' + (err.error || res.status));
+    window.showToast('Error: ' + (err.error || res.status));
   }
 }
 
 async function deleteTunnel(id, name) {
   if (!confirm("Delete tunnel '" + name + "'?")) return;
   const res = await fetch('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
-  if (!res.ok) { alert('Failed to delete tunnel'); return; }
+  if (!res.ok) { window.showToast('Failed to delete tunnel'); return; }
   await refreshData();
 }
 
@@ -1191,7 +1208,7 @@ async function toggleTunnelEnabled(id, currentlyEnabled) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Toggle failed' }));
-    alert('Error: ' + (err.error || res.status));
+    window.showToast('Error: ' + (err.error || res.status));
     return;
   }
   await refreshData();
@@ -1275,9 +1292,18 @@ export function startDashboard(opts: {
   db: DB;
   agentManager: AgentManager;
   publicIp: string;
+  reservedPublicPorts?: number[];
   onTunnelsChanged: () => Promise<void>;
 }): void {
-  const { port, credentials, db, agentManager, publicIp, onTunnelsChanged } = opts;
+  const { port, credentials, db, agentManager, publicIp, reservedPublicPorts, onTunnelsChanged } = opts;
+  const envAgentPort = Number.parseInt(process.env.AGENT_PORT ?? "7000", 10);
+  const reservedPorts = new Set<number>(
+    [
+      ...(reservedPublicPorts ?? []),
+      port,
+      Number.isFinite(envAgentPort) ? envAgentPort : 7000,
+    ].filter((p) => Number.isFinite(p) && p > 0 && p <= 65535),
+  );
 
   Bun.serve({
     port,
@@ -1526,10 +1552,21 @@ export function startDashboard(opts: {
           return json({ error: "Missing required fields" }, 400);
         }
         if (type !== "tcp" && type !== "udp") return json({ error: "type must be tcp or udp" }, 400);
+        const listenPortNum = Number.parseInt(listenPort, 10);
+        const targetPortNum = Number.parseInt(targetPort, 10);
+        if (!Number.isInteger(listenPortNum) || listenPortNum < 1 || listenPortNum > 65535) {
+          return json({ error: "listenPort must be 1-65535" }, 400);
+        }
+        if (!Number.isInteger(targetPortNum) || targetPortNum < 1 || targetPortNum > 65535) {
+          return json({ error: "targetPort must be 1-65535" }, 400);
+        }
+        if (reservedPorts.has(listenPortNum)) {
+          return json({ error: `Public port ${listenPortNum} is reserved by server configuration` }, 400);
+        }
         if (agentId && !db.getAgent(agentId)) return json({ error: "Agent not found" }, 404);
 
         const id = crypto.randomUUID();
-        const row = db.createTunnel(id, name, type, parseInt(listenPort, 10), targetHost, parseInt(targetPort, 10), agentId);
+        const row = db.createTunnel(id, name, type, listenPortNum, targetHost, targetPortNum, agentId);
         await onTunnelsChanged();
         return json(db.rowToTunnelConfig(row), 201);
         }
@@ -1555,9 +1592,20 @@ export function startDashboard(opts: {
           return json({ error: "Missing required fields" }, 400);
         }
         if (type !== "tcp" && type !== "udp") return json({ error: "type must be tcp or udp" }, 400);
+        const listenPortNum = Number.parseInt(listenPort, 10);
+        const targetPortNum = Number.parseInt(targetPort, 10);
+        if (!Number.isInteger(listenPortNum) || listenPortNum < 1 || listenPortNum > 65535) {
+          return json({ error: "listenPort must be 1-65535" }, 400);
+        }
+        if (!Number.isInteger(targetPortNum) || targetPortNum < 1 || targetPortNum > 65535) {
+          return json({ error: "targetPort must be 1-65535" }, 400);
+        }
+        if (reservedPorts.has(listenPortNum)) {
+          return json({ error: `Public port ${listenPortNum} is reserved by server configuration` }, 400);
+        }
         if (agentId && !db.getAgent(agentId)) return json({ error: "Agent not found" }, 404);
 
-        const updated = db.updateTunnel(id, name, type, parseInt(listenPort, 10), targetHost, parseInt(targetPort, 10), agentId);
+        const updated = db.updateTunnel(id, name, type, listenPortNum, targetHost, targetPortNum, agentId);
         await onTunnelsChanged();
         if (!updated) return json({ error: "Tunnel not found" }, 404);
         return json(db.rowToTunnelConfig(updated));

@@ -56,6 +56,7 @@ export class Server {
       db: this.db,
       agentManager: this.agentManager,
       publicIp: this.config.publicIp,
+      reservedPublicPorts: [this.config.agentPort, this.config.dashboardPort],
       onTunnelsChanged: () => this.reloadTunnels(),
     });
   }
