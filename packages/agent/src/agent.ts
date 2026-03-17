@@ -127,6 +127,8 @@ export class Agent {
       socket.destroy();
     };
 
+    const onData = (chunk: Buffer) => decoder.push(chunk);
+
     socket.on("secureConnect", () => {
       if (!this.isActiveControlSocket(socket, generation)) {
         socket.destroy();
@@ -141,7 +143,7 @@ export class Agent {
       );
     });
 
-    socket.on("data", (chunk: Buffer) => decoder.push(chunk));
+    socket.on("data", onData);
 
     let authenticated = false;
     const authTimeout = setTimeout(() => {
@@ -149,6 +151,17 @@ export class Agent {
       console.warn("[Agent] Control auth timed out; forcing reconnect");
       socket.destroy();
     }, CONTROL_AUTH_TIMEOUT_MS);
+
+    let cleanedUp = false;
+    const cleanupAttempt = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearTimeout(authTimeout);
+      decoder.onFrame = null;
+      decoder.onError = null;
+      socket.removeListener("data", onData);
+      socket.setTimeout(0);
+    };
 
     decoder.onFrame = (frame) => {
       if (!this.isActiveControlSocket(socket, generation)) return;
@@ -160,6 +173,7 @@ export class Agent {
           if (!body.ok) {
             console.error("[Agent] Server rejected auth:", body.message);
             this.authRejected = true;
+            cleanupAttempt();
             this.stop();
             console.error("[Agent] Reconnect disabled after unauthorized/auth-failed response");
             socket.destroy();
@@ -214,7 +228,7 @@ export class Agent {
     };
 
     socket.on("close", () => {
-      clearTimeout(authTimeout);
+      cleanupAttempt();
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
@@ -223,6 +237,7 @@ export class Agent {
     });
 
     socket.on("error", (err) => {
+      cleanupAttempt();
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
@@ -231,6 +246,7 @@ export class Agent {
     });
 
     socket.on("end", () => {
+      cleanupAttempt();
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
@@ -239,6 +255,7 @@ export class Agent {
     });
 
     socket.on("timeout", () => {
+      cleanupAttempt();
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
