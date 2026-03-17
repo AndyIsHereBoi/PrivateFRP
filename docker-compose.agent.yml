@@ -10,6 +10,7 @@ services:
       context: .
       dockerfile: Dockerfile.agent
     restart: unless-stopped
+    network_mode: host
     environment:
       SERVER_HOST: ${SERVER_HOST:?SERVER_HOST is required}
       SERVER_PORT: ${SERVER_PORT:-7000}
