@@ -755,12 +755,18 @@ function fmtBytes(bytes) {
 }
 async function refreshTraffic() {
   try {
-    const window = document.getElementById('traffic-window').value;
+    const trafficWindow = document.getElementById('traffic-window').value;
     const tunnelSort = document.getElementById('tunnel-sort').value;
     const tunnelDir = document.getElementById('tunnel-dir').value;
     const ipSort = document.getElementById('ip-sort').value;
     const ipDir = document.getElementById('ip-dir').value;
-    const payload = await window.dashboardWsRequest('traffic', { window, tunnelSort, tunnelDir, ipSort, ipDir });
+    const payload = await window.dashboardWsRequest('traffic', {
+      window: trafficWindow,
+      tunnelSort,
+      tunnelDir,
+      ipSort,
+      ipDir,
+    });
     const tunnels = Array.isArray(payload) ? payload : (payload.tunnels || []);
     const topIps = Array.isArray(payload) ? [] : (payload.topIps || []);
     const ipTbody = document.getElementById('top-ips-tbody');
