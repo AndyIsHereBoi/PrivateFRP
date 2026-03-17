@@ -35,7 +35,7 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
  * replenished in the background, so the next request has zero handshake
  * overhead to pay.
  */
-const POOL_SIZE = parsePositiveIntEnv("AGENT_POOL_SIZE", 32);
+const POOL_SIZE = parsePositiveIntEnv("AGENT_POOL_SIZE", 128);
 
 export interface AgentConfig {
   serverHost: string;
