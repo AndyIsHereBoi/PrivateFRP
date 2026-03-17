@@ -468,9 +468,6 @@ function pageShell(opts: {
     </div>
   </div>
 </header>
-<div class="container">
-  ${opts.content}
-</div>
 <div id="toast-wrap" class="toast-wrap" aria-live="polite" aria-atomic="true"></div>
 <script>
 (() => {
@@ -570,6 +567,9 @@ function pageShell(opts: {
   };
 })();
 </script>
+<div class="container">
+  ${opts.content}
+</div>
 </body></html>`;
 }
 
