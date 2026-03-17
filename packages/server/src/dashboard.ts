@@ -716,7 +716,7 @@ async function refreshTraffic() {
 });
 
 refreshTraffic();
-setInterval(refreshTraffic, 10000);
+setInterval(refreshTraffic, 1000);
 </script>
 `,
   });
@@ -728,6 +728,7 @@ function agentsPage(
     name: string;
     enabled: boolean;
     connected: boolean;
+    activeConnections: number;
     lastHeartbeat: number;
     remoteAddress: string;
   }>,
@@ -745,6 +746,7 @@ function agentsPage(
         <td><code style="font-size:0.78rem">${escHtml(a.id)}</code></td>
         <td>${escHtml(a.name)}</td>
         <td>${status}</td>
+        <td>${a.activeConnections}</td>
         <td>${escHtml(a.remoteAddress) || ""}</td>
         <td>${hb}</td>
         <td>
@@ -754,7 +756,6 @@ function agentsPage(
       </tr>`;
     })
     .join("\n");
-
   return pageShell({
     title: "PrivateFRP - Agents",
     subtitle: "Agents",
@@ -764,8 +765,8 @@ function agentsPage(
     content: `
   <h1>Agents</h1>
   <table>
-    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>IP Address</th><th>Last Heartbeat</th><th>Actions</th></tr></thead>
-    <tbody id="agents-tbody">${agentRows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
+    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Current Connections</th><th>IP Address</th><th>Last Heartbeat</th><th>Actions</th></tr></thead>
+    <tbody id="agents-tbody">${agentRows || '<tr><td colspan="7" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
   </table>
 
   <div class="card">
@@ -807,7 +808,7 @@ async function refreshAgents() {
     const agents = await res.json();
     const tbody = document.getElementById('agents-tbody');
     if (!agents.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b;text-align:center">No agents registered</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center">No agents registered</td></tr>';
       return;
     }
     tbody.innerHTML = agents.map(a => {
@@ -821,6 +822,7 @@ async function refreshAgents() {
         <td><code style="font-size:0.78rem">\${esc(a.id)}</code></td>
         <td>\${esc(a.name)}</td>
         <td>\${status}</td>
+        <td>\${Number(a.activeConnections || 0)}</td>
         <td>\${esc(normalizeIp(a.remoteAddress || '')) || '—'}</td>
         <td>\${hb}</td>
         <td>
@@ -865,7 +867,7 @@ async function registerAgent() {
 }
 
 refreshAgents();
-setInterval(refreshAgents, 10000);
+setInterval(refreshAgents, 1000);
 </script>
 `,
   });
@@ -1114,7 +1116,7 @@ async function refreshData() {
 }
 
 refreshData();
-setInterval(refreshData, 10000);
+setInterval(refreshData, 1000);
 </script>
 `,
   });
@@ -1220,6 +1222,7 @@ export function startDashboard(opts: {
             name: a.name,
             enabled: !!a.enabled,
             connected: !!connected && !!a.enabled,
+            activeConnections: connected?.activeConnections ?? 0,
             lastHeartbeat: connected?.lastHeartbeat ?? 0,
             remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? ""),
           };
@@ -1264,6 +1267,7 @@ export function startDashboard(opts: {
               name: a.name,
               enabled: !!a.enabled,
               connected: !!connected && !!a.enabled,
+              activeConnections: connected?.activeConnections ?? 0,
               remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? null),
               lastHeartbeat: connected?.lastHeartbeat ?? null,
               createdAt: a.created_at,

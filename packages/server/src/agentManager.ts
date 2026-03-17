@@ -6,12 +6,20 @@ import type tls from "tls";
 /** Max age for a pooled socket — discard anything older (may be TCP-idle-closed). */
 const POOL_SOCKET_MAX_AGE_MS = 30_000;
 
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
 /**
  * Cap on pending (on-demand) dials per agent.  Requests beyond this are
  * rejected immediately rather than being queued; this prevents a thundering
  * herd from filling memory when an agent is slow to respond.
  */
-const MAX_PENDING_DIALS = 25;
+const MAX_PENDING_DIALS = parsePositiveIntEnv("SERVER_MAX_PENDING_DIALS", 1000);
 
 export interface PendingDial {
   requestId: string;

@@ -21,13 +21,21 @@ const CONTROL_HEARTBEAT_TIMEOUT_MS = 15_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
 /**
  * Number of pre-warmed TLS data connections to keep ready at all times.
  * When one is consumed by an incoming tunnel request the pool is immediately
  * replenished in the background, so the next request has zero handshake
  * overhead to pay.
  */
-const POOL_SIZE = 5;
+const POOL_SIZE = parsePositiveIntEnv("AGENT_POOL_SIZE", 32);
 
 export interface AgentConfig {
   serverHost: string;
