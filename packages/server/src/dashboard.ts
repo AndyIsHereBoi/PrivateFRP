@@ -760,15 +760,7 @@ async function refreshTraffic() {
     const tunnelDir = document.getElementById('tunnel-dir').value;
     const ipSort = document.getElementById('ip-sort').value;
     const ipDir = document.getElementById('ip-dir').value;
-    let payload;
-    try {
-      payload = await window.dashboardWsRequest('traffic', { window, tunnelSort, tunnelDir, ipSort, ipDir });
-    } catch {
-      const params = new URLSearchParams({ window, tunnelSort, tunnelDir, ipSort, ipDir });
-      const res = await fetch('/api/traffic?' + params.toString());
-      if (!res.ok) return;
-      payload = await res.json();
-    }
+    const payload = await window.dashboardWsRequest('traffic', { window, tunnelSort, tunnelDir, ipSort, ipDir });
     const tunnels = Array.isArray(payload) ? payload : (payload.tunnels || []);
     const topIps = Array.isArray(payload) ? [] : (payload.topIps || []);
     const ipTbody = document.getElementById('top-ips-tbody');
@@ -837,6 +829,7 @@ function agentsPage(
     enabled: boolean;
     connected: boolean;
     activeConnections: number;
+    latencyMs: number | null;
     lastHeartbeat: number;
     remoteAddress: string;
   }>,
@@ -849,11 +842,15 @@ function agentsPage(
         : a.connected
         ? `<span class="badge badge-green">Connected</span>`
         : `<span class="badge badge-gray">Offline</span>`;
+      const latency = a.latencyMs === null || a.latencyMs === undefined
+        ? "-"
+        : `${Math.max(0, Math.round(a.latencyMs))} ms`;
       const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : "";
       return `<tr>
         <td><code style="font-size:0.78rem">${escHtml(a.id)}</code></td>
         <td>${escHtml(a.name)}</td>
         <td>${status}</td>
+        <td>${latency}</td>
         <td>${a.activeConnections}</td>
         <td>${escHtml(a.remoteAddress) || ""}</td>
         <td>${hb}</td>
@@ -873,8 +870,8 @@ function agentsPage(
     content: `
   <h1>Agents</h1>
   <table>
-    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Current Connections</th><th>IP Address</th><th>Last Heartbeat</th><th>Actions</th></tr></thead>
-    <tbody id="agents-tbody">${agentRows || '<tr><td colspan="7" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
+    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Latency</th><th>Current Connections</th><th>IP Address</th><th>Last Heartbeat</th><th>Actions</th></tr></thead>
+    <tbody id="agents-tbody">${agentRows || '<tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>'}</tbody>
   </table>
 
   <div class="card">
@@ -911,17 +908,10 @@ function normalizeIp(ip) {
 }
 async function refreshAgents() {
   try {
-    let agents;
-    try {
-      agents = await window.dashboardWsRequest('agents', {});
-    } catch {
-      const res = await fetch('/api/agents');
-      if (!res.ok) return;
-      agents = await res.json();
-    }
+    const agents = await window.dashboardWsRequest('agents', {});
     const tbody = document.getElementById('agents-tbody');
     if (!agents.length) {
-      tbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;text-align:center">No agents registered</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>';
       return;
     }
     tbody.innerHTML = agents.map(a => {
@@ -930,11 +920,15 @@ async function refreshAgents() {
         : a.connected
         ? '<span class="badge badge-green">Connected</span>'
         : '<span class="badge badge-gray">Offline</span>';
+      const latency = a.latencyMs === null || a.latencyMs === undefined
+        ? '-'
+        : Math.max(0, Math.round(Number(a.latencyMs))) + ' ms';
       const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '—';
       return \`<tr>
         <td><code style="font-size:0.78rem">\${esc(a.id)}</code></td>
         <td>\${esc(a.name)}</td>
         <td>\${status}</td>
+        <td>\${latency}</td>
         <td>\${Number(a.activeConnections || 0)}</td>
         <td>\${esc(normalizeIp(a.remoteAddress || '')) || '—'}</td>
         <td>\${hb}</td>
@@ -1217,22 +1211,12 @@ async function toggleTunnelEnabled(id, currentlyEnabled) {
 
 async function refreshData() {
   try {
-    try {
-      const [agents, tunnels] = await Promise.all([
-        window.dashboardWsRequest('agents', {}),
-        window.dashboardWsRequest('tunnels', {}),
-      ]);
-      AGENTS = agents;
-      TUNNELS = tunnels;
-    } catch {
-      const [agentsRes, tunnelsRes] = await Promise.all([
-        fetch('/api/agents'),
-        fetch('/api/tunnels')
-      ]);
-      if (!agentsRes.ok || !tunnelsRes.ok) return;
-      AGENTS = await agentsRes.json();
-      TUNNELS = await tunnelsRes.json();
-    }
+    const [agents, tunnels] = await Promise.all([
+      window.dashboardWsRequest('agents', {}),
+      window.dashboardWsRequest('tunnels', {}),
+    ]);
+    AGENTS = agents;
+    TUNNELS = tunnels;
     const createSelect = document.getElementById('agentSelect');
     const editSelect = document.getElementById('editAgentId');
 
@@ -1266,6 +1250,7 @@ function buildAgentsPayload(db: DB, agentManager: AgentManager): Array<{
   enabled: boolean;
   connected: boolean;
   activeConnections: number;
+  latencyMs: number | null;
   remoteAddress: string | null;
   lastHeartbeat: number | null;
   createdAt: number;
@@ -1280,6 +1265,7 @@ function buildAgentsPayload(db: DB, agentManager: AgentManager): Array<{
       enabled: !!a.enabled,
       connected: !!connected && !!a.enabled,
       activeConnections: connected?.activeConnections ?? 0,
+      latencyMs: connected?.lastLatencyMs ?? null,
       remoteAddress: normalizeRemoteIp(connected?.remoteAddress ?? null),
       lastHeartbeat: connected?.lastHeartbeat ?? null,
       createdAt: a.created_at,
@@ -1474,6 +1460,7 @@ export function startDashboard(opts: {
             enabled: a.enabled,
             connected: a.connected,
             activeConnections: a.activeConnections,
+            latencyMs: a.latencyMs,
             lastHeartbeat: a.lastHeartbeat ?? 0,
             remoteAddress: a.remoteAddress ?? "",
           };
