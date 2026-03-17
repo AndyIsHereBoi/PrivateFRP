@@ -1294,6 +1294,10 @@ function buildTunnelsPayload(db: DB): Array<ReturnType<DB["rowToTunnelConfig"]> 
   }));
 }
 
+function isListenPortInUse(db: DB, listenPort: number, excludeTunnelId?: string): boolean {
+  return db.listTunnels().some((t) => t.listen_port === listenPort && t.id !== (excludeTunnelId ?? ""));
+}
+
 type DashboardWsRequest = {
   reqId?: unknown;
   type?: unknown;
@@ -1313,6 +1317,8 @@ export function startDashboard(opts: {
 }): void {
   const { port, credentials, db, agentManager, publicIp, reservedPublicPorts, onTunnelsChanged } = opts;
   const envAgentPort = Number.parseInt(process.env.AGENT_PORT ?? "7000", 10);
+  const blockedPrivilegedPortMax = 1023;
+  const allowedPrivilegedPorts = new Set<number>([80, 443]);
   const reservedPorts = new Set<number>(
     [
       ...(reservedPublicPorts ?? []),
@@ -1576,6 +1582,16 @@ export function startDashboard(opts: {
         if (!Number.isInteger(targetPortNum) || targetPortNum < 1 || targetPortNum > 65535) {
           return json({ error: "targetPort must be 1-65535" }, 400);
         }
+        if (
+          listenPortNum >= 1 &&
+          listenPortNum <= blockedPrivilegedPortMax &&
+          !allowedPrivilegedPorts.has(listenPortNum)
+        ) {
+          return json({ error: `Public port ${listenPortNum} is a reserved system port (1-1023)` }, 400);
+        }
+        if (isListenPortInUse(db, listenPortNum)) {
+          return json({ error: `Public port ${listenPortNum} is already used by another tunnel` }, 409);
+        }
         if (reservedPorts.has(listenPortNum)) {
           return json({ error: `Public port ${listenPortNum} is reserved by server configuration` }, 400);
         }
@@ -1615,6 +1631,16 @@ export function startDashboard(opts: {
         }
         if (!Number.isInteger(targetPortNum) || targetPortNum < 1 || targetPortNum > 65535) {
           return json({ error: "targetPort must be 1-65535" }, 400);
+        }
+        if (
+          listenPortNum >= 1 &&
+          listenPortNum <= blockedPrivilegedPortMax &&
+          !allowedPrivilegedPorts.has(listenPortNum)
+        ) {
+          return json({ error: `Public port ${listenPortNum} is a reserved system port (1-1023)` }, 400);
+        }
+        if (isListenPortInUse(db, listenPortNum, id)) {
+          return json({ error: `Public port ${listenPortNum} is already used by another tunnel` }, 409);
         }
         if (reservedPorts.has(listenPortNum)) {
           return json({ error: `Public port ${listenPortNum} is reserved by server configuration` }, 400);
