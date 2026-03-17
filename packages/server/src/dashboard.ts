@@ -1062,6 +1062,7 @@ function tunnelsPage(
 const PUBLIC_IP = ${JSON.stringify(publicIp)};
 let AGENTS = ${safeAgents};
 let TUNNELS = ${safeTunnels};
+let agentSelectsFrozen = false;
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
@@ -1232,7 +1233,22 @@ async function refreshData() {
       AGENTS = await agentsRes.json();
       TUNNELS = await tunnelsRes.json();
     }
-    updateAgentSelects();
+    const createSelect = document.getElementById('agentSelect');
+    const editSelect = document.getElementById('editAgentId');
+
+    // Once a specific agent is selected, freeze option list updates to avoid
+    // live-refresh replacing the user's in-progress selection context.
+    if (!agentSelectsFrozen) {
+      const createVal = createSelect ? String(createSelect.value || '') : '';
+      const editVal = editSelect ? String(editSelect.value || '') : '';
+      if (createVal !== '' || editVal !== '') {
+        agentSelectsFrozen = true;
+      }
+    }
+
+    if (!agentSelectsFrozen) {
+      updateAgentSelects();
+    }
     renderGroups();
   } catch (_) {}
 }
