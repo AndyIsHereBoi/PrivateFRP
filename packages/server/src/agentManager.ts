@@ -19,7 +19,8 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
  * rejected immediately rather than being queued; this prevents a thundering
  * herd from filling memory when an agent is slow to respond.
  */
-const MAX_PENDING_DIALS = parsePositiveIntEnv("SERVER_MAX_PENDING_DIALS", 1000);
+const MAX_PENDING_DIALS = parsePositiveIntEnv("SERVER_MAX_PENDING_DIALS", 10000);
+const DIAL_TIMEOUT_MS = parsePositiveIntEnv("SERVER_DIAL_TIMEOUT_MS", 30000);
 
 export interface PendingDial {
   requestId: string;
@@ -235,7 +236,7 @@ export class AgentManager {
       const timer = setTimeout(() => {
         agent.pendingDials.delete(requestId);
         reject(new Error(`Dial timeout for request ${requestId}`));
-      }, 10_000);
+      }, DIAL_TIMEOUT_MS);
 
       agent.pendingDials.set(requestId, { requestId, tunnelId, resolve, reject, timer });
 
@@ -265,7 +266,7 @@ export class AgentManager {
       const timer = setTimeout(() => {
         agent.pendingDials.delete(requestId);
         reject(new Error(`UDP dial timeout for request ${requestId}`));
-      }, 10_000);
+      }, DIAL_TIMEOUT_MS);
 
       agent.pendingDials.set(requestId, { requestId, tunnelId, resolve, reject, timer });
 
