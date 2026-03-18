@@ -324,15 +324,15 @@ const CSS = `
     gap: 1rem;
   }
   .topbar-left { display:flex; align-items:center; gap:0.65rem; min-width:0; flex-wrap: wrap; }
-  .brand { font-size: 1.15rem; font-weight: 800; color: #38bdf8; letter-spacing: 0.02em; }
+  .brand { font-size: 1.15rem; font-weight: 800; color: #fb923c; letter-spacing: 0.02em; }
   .topbar-right { display:flex; align-items:center; gap:0.5rem; margin-left:auto; }
-  h1 { font-size: 1.8rem; font-weight: 700; color: #38bdf8; margin-bottom: 0.25rem; }
-  h2 { font-size: 1.2rem; font-weight: 600; color: #7dd3fc; margin: 1.5rem 0 0.75rem; }
-  h3 { font-size: 1rem; font-weight: 600; color: #bfdbfe; margin: 1rem 0 0.5rem; }
+  h1 { font-size: 1.8rem; font-weight: 700; color: #fb923c; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.2rem; font-weight: 600; color: #fdba74; margin: 1.5rem 0 0.75rem; }
+  h3 { font-size: 1rem; font-weight: 600; color: #fed7aa; margin: 1rem 0 0.5rem; }
   .subtitle { color: #94a3b8; font-size: 0.9rem; margin-bottom: 2rem; }
   .tabs { display:flex; gap:0.5rem; margin-bottom: 0; }
-  .tab { display:inline-block; padding:0.42rem 0.72rem; border:1px solid #334155; border-radius:8px; color:#93c5fd; text-decoration:none; font-size:0.82rem; }
-  .tab.active { background:#1d4ed8; border-color:#2563eb; color:#fff; }
+  .tab { display:inline-block; padding:0.42rem 0.72rem; border:1px solid #334155; border-radius:8px; color:#fdba74; text-decoration:none; font-size:0.82rem; }
+  .tab.active { background:#c2410c; border-color:#ea580c; color:#fff; }
   .topbar .btn-danger {
     padding: 0.42rem 0.72rem;
     font-size: 0.82rem;
@@ -347,7 +347,7 @@ const CSS = `
   .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
   .badge-green { background: #14532d; color: #4ade80; }
   .badge-gray { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
-  .badge-blue { background: #1e3a5f; color: #60a5fa; }
+  .badge-blue { background: #7c2d12; color: #fdba74; }
   .badge-purple { background: #3b0764; color: #c084fc; }
   .card { background: #1e293b; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; }
   .card.compact { padding: 1rem 1.1rem; }
@@ -356,15 +356,15 @@ const CSS = `
   .traffic-toolbar label { margin-bottom:0.25rem; }
   .traffic-toolbar select { margin-bottom:0; }
   .traffic-subtabs { display:flex; gap:0.55rem; margin:0.35rem 0 0.8rem; }
-  .traffic-subtab { background:#0f172a; color:#93c5fd; border:1px solid #334155; border-radius:8px; padding:0.44rem 0.8rem; font-size:0.84rem; font-weight:600; }
-  .traffic-subtab.active { background:#1d4ed8; border-color:#2563eb; color:#fff; }
+  .traffic-subtab { background:#0f172a; color:#fdba74; border:1px solid #334155; border-radius:8px; padding:0.44rem 0.8rem; font-size:0.84rem; font-weight:600; }
+  .traffic-subtab.active { background:#c2410c; border-color:#ea580c; color:#fff; }
   .traffic-view { display:none; }
   .traffic-view.active { display:block; }
   .traffic-caption { color:#94a3b8; font-size:0.85rem; margin-bottom:0.75rem; }
   .traffic-table-wrap { overflow-x:auto; }
   label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; }
   input, select { width: 100%; padding: 0.5rem 0.75rem; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 0.9rem; margin-bottom: 1rem; }
-  input:focus, select:focus { outline: none; border-color: #38bdf8; }
+  input:focus, select:focus { outline: none; border-color: #fb923c; }
   .form-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
   .form-row > div { display: flex; flex-direction: column; }
   .form-row > div input, .form-row > div select { margin-bottom: 0; }
@@ -384,7 +384,7 @@ const CSS = `
   }
   button, .btn { padding: 0.5rem 1.25rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: opacity 0.15s; }
   button:hover, .btn:hover { opacity: 0.85; }
-  .btn-primary { background: #0284c7; color: #fff; }
+  .btn-primary { background: #ea580c; color: #fff; }
   .btn-danger { background: #b91c1c; color: #fff; padding: 0.3rem 0.75rem; font-size: 0.8rem; }
   .btn-success { background: #15803d; color: #fff; }
   .btn-compact { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
@@ -672,7 +672,7 @@ function trafficPage(
           </tr>`;
         })
         .join("\n");
-      return `<tr><td colspan="4" style="background:#111827;color:#93c5fd;font-weight:700;border-top:1px solid #334155">${escHtml(agentName)}</td></tr>${itemRows}`;
+      return `<tr><td colspan="4" style="background:#111827;color:#fdba74;font-weight:700;border-top:1px solid #334155">${escHtml(agentName)}</td></tr>${itemRows}`;
     })
     .join("\n");
 
@@ -893,7 +893,7 @@ async function refreshTraffic() {
     });
     const groups = Object.keys(byAgent).sort();
     tbody.innerHTML = groups.map(agentName => {
-      const groupHeader = '<tr><td colspan="4" style="background:#111827;color:#93c5fd;font-weight:700;border-top:1px solid #334155">' + esc(agentName) + '</td></tr>';
+      const groupHeader = '<tr><td colspan="4" style="background:#111827;color:#fdba74;font-weight:700;border-top:1px solid #334155">' + esc(agentName) + '</td></tr>';
       const rows = byAgent[agentName].map(t => {
         return '<tr>' +
           '<td>' + esc(t.name) + '</td>' +
