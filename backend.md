@@ -8,15 +8,15 @@ specific implementation choices exist.
 - [Goals](#goals)
 - [High-Level Components](#high-level-components)
 - [Connection Types](#connection-types)
+- [Current Transport Model](#current-transport-model)
 - [Database Structure](#database-structure)
 - [TCP Flow](#tcp-flow)
 - [UDP Flow](#udp-flow)
 - [Config State and EnableDisable Semantics](#config-state-and-enabledisable-semantics)
-- [Why Pre-Warmed Pooling Exists](#why-pre-warmed-pooling-exists)
-- [Why There Is a Brief Handoff Pause](#why-there-is-a-brief-handoff-pause)
 - [Why `setNoDelay(true)` Is Enabled](#why-setnodelaytrue-is-enabled)
 - [Reconnect and Control-Channel Resilience](#reconnect-and-control-channel-resilience)
 - [Backpressure and Transparency](#backpressure-and-transparency)
+- [Operational Metrics](#operational-metrics)
 - [Safety Guards](#safety-guards)
 - [Tradeoffs](#tradeoffs)
 - [Where to Look in Code](#where-to-look-in-code)
@@ -42,13 +42,25 @@ specific implementation choices exist.
 ## Connection Types
 
 - Control connection
-: Long-lived TLS socket between agent and server for auth, heartbeat, and dial coordination.
+: Long-lived TLS socket between agent and server for auth, heartbeat, config push, and stream control.
 
-- Pooled data connection
-: Pre-warmed TLS socket opened by the agent and parked on the server, ready for assignment.
+- Multiplexed stream
+: Logical per-client flow carried over the control connection using framed `StreamOpen`, `StreamData`, and `StreamClose` messages.
 
-- Fallback data connection
-: On-demand TLS socket opened when no pooled socket is available.
+- Legacy pooled data connection
+: Older compatibility path using pre-warmed data sockets (`PoolHello` / `DialAssign`).
+
+- Legacy fallback data connection
+: Older on-demand path (`DialTcp` / `DataConnHello` and `DialUdpSession`).
+
+## Current Transport Model
+
+- Primary path is single-control-connection multiplexing.
+- Tunnel traffic and control traffic share the same TLS control socket.
+- Server opens a logical stream per inbound TCP client (or UDP peer session).
+- Agent opens a corresponding local target socket/session and relays payload frames.
+- Stream lifecycle is explicit via `StreamOpen` and `StreamClose`.
+- Legacy data-connection handlers still exist for compatibility but are not the intended steady-state path.
 
 ## Database Structure
 
@@ -111,68 +123,26 @@ Operationally, this gives a layered model:
 ## TCP Flow
 
 1. External client connects to a tunnel listen port on the server.
-2. Server asks `AgentManager` for a data socket.
-3. Fast path:
-: Server takes a pooled socket and writes `DialAssign` on that socket.
-4. Agent receives `DialAssign`, connects to local target service.
-5. Agent and server switch to raw stream mode and `pipe()` both directions.
-6. Bytes flow transparently between external client and local service.
+2. Server creates a stream ID and sends `StreamOpen(kind=tcp, tunnelId, streamId)` on control.
+3. Agent opens local TCP connection to the tunnel target.
+4. Both sides exchange `StreamData` frames with base64 payloads.
+5. Either side sends `StreamClose` to terminate the logical stream.
 
-If no pooled socket is available:
-
-- Server sends fallback dial request on control channel.
-- Agent opens a fresh data connection and identifies it.
-- Server binds request to that connection and pipes as above.
+Result: many concurrent TCP clients can be carried over one physical control TLS connection.
 
 ## UDP Flow
 
-- Server tracks sessions per external peer.
-- A UDP session dial request is sent to the agent when needed.
-- UDP payloads are exchanged as framed `UdpData` messages over a data connection.
-- Idle UDP sessions are reaped to prevent unbounded growth.
+- Server tracks UDP sessions keyed by external peer and maps each session to a stream ID.
+- On first packet for a peer, server sends `StreamOpen(kind=udp, peerAddr, streamId)`.
+- UDP payloads are exchanged as `StreamData` frames over control.
+- Idle UDP sessions are reaped; server sends `StreamClose` on reap.
+- Agent-side UDP socket/session is closed when stream closes.
 
-## Why Pre-Warmed Pooling Exists
+## Legacy Data-Path Notes
 
-Without pooling, each new TCP connection waits for an extra control round-trip and
-TLS setup on the data path. For bursty traffic (browser tabs, game joins), this
-adds visible latency and timeouts under load.
-
-Pooling removes handshake cost from the critical path by keeping ready-to-use
-sockets parked on the server.
-
-## Why There Is a Brief Handoff Pause
-
-A key reliability fix is intentionally pausing sockets during the framed-to-raw
-handoff.
-
-### Problem that occurred
-
-When moving a socket from frame decoding to raw piping, removing a `data`
-listener does not automatically stop stream flow in Node.js. A socket can remain
-in flowing mode. If bytes arrive in that gap before `pipe()` is attached, those
-bytes can be dropped.
-
-This manifested as:
-
-- Browser sends `GET`.
-- Server sees inbound request.
-- Agent never delivers request to local service.
-- Browser hangs waiting for response.
-
-### Current behavior
-
-During handoff, code now:
-
-1. Detaches decoder.
-2. Removes decode listener.
-3. Calls `pause()` immediately.
-4. Re-injects leftover bytes with `unshift()`.
-5. Establishes `pipe()` to target.
-
-This guarantees bytes are buffered until the raw pipe is ready.
-
-The pause is not an artificial delay timer; it is a short flow-control hold to
-prevent packet loss during mode transition.
+- Pre-warmed pooling and fallback data sockets are historical optimization paths from the multi-connection architecture.
+- The framed-to-raw handoff pause (`pause()` / `unshift()`) remains relevant only for those legacy data-socket paths.
+- In current multiplex mode, traffic stays framed end-to-end on control and does not switch to raw data sockets.
 
 ## Why `setNoDelay(true)` Is Enabled
 
@@ -198,24 +168,32 @@ and watchdog teardown guarantees reconnect logic still triggers.
 
 ## Backpressure and Transparency
 
-After tunnel setup, forwarding uses Node stream `pipe()` directly between
-sockets. No application-level chunk parsing is done on raw tunnel traffic.
+In multiplex mode, payload bytes are relayed as framed `StreamData` messages,
+so the transport is no longer raw `pipe()` between server and agent sockets.
+Application payload still passes through unchanged at the byte level (aside from
+base64 framing), and no protocol-specific parsing is performed.
 
-This keeps behavior protocol-agnostic and preserves the exact data stream.
+## Operational Metrics
+
+- Dashboard `Current Connections` represents active logical streams/sessions per agent.
+- It is not the physical control-socket count.
+- Examples counted:
+  - Active TCP client connections (for example WebSocket clients, game clients).
+  - Active UDP peer sessions.
 
 ## Safety Guards
 
 - Pending dial caps to prevent runaway memory growth under load.
-- Early client disconnect handling to avoid orphaned data sockets.
-- Pool socket age/health checks before assignment.
-- Cleanup on reconnect/disconnect to avoid stale pooled sockets.
+- Active stream caps per agent via `SERVER_MAX_ACTIVE_CONNECTIONS_PER_AGENT`.
+- Early client disconnect handling to avoid orphaned streams.
+- Cleanup on reconnect/disconnect to avoid stale stream/session state.
 
 ## Tradeoffs
 
-- Pooling increases baseline open socket count but improves connection latency.
-- Watchdog/timeout can trigger reconnect during severe transient pauses, but this
-  is preferable to silently stuck control channels.
-- UDP is session-managed with framed payloads, while TCP is raw-stream forwarded.
+- Multiplexing drastically reduces socket churn and baseline socket count.
+- A single control channel becomes a higher-value dependency, so heartbeat and reconnect behavior is critical.
+- Framed payload transport adds serialization overhead (JSON + base64), trading some CPU for simpler connection management.
+- Legacy data-socket paths still in code increase maintenance complexity until fully removed.
 
 ## Where to Look in Code
 
@@ -223,13 +201,13 @@ This keeps behavior protocol-agnostic and preserves the exact data stream.
 : TLS accept path and first-frame classification.
 
 - `packages/server/src/agentManager.ts`
-: Agent state, pooled sockets, pending dials.
+: Agent state, active connection counters, and legacy pool/pending dial compatibility handlers.
 
 - `packages/server/src/tunnelManager.ts`
-: Per-tunnel listener lifecycle and TCP/UDP forwarding entry points.
+: Per-tunnel listener lifecycle, stream open/data/close routing, and TCP/UDP forwarding entry points.
 
 - `packages/agent/src/agent.ts`
-: Control lifecycle, pool maintenance, reconnect logic, target connection bridging.
+: Control lifecycle, multiplex stream handlers, reconnect logic, plus legacy pool handlers.
 
 - `packages/shared/src/protocol.ts`
 : Message types and frame encoding/decoding.
