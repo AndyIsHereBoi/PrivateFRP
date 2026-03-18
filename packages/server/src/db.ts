@@ -345,6 +345,19 @@ export class DB {
     this.db.query("DELETE FROM traffic_rollups WHERE bucket_start < ?").run(beforeEpochSec);
   }
 
+  clearTrafficData(): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.query("UPDATE tunnels SET traffic_in_bytes = 0, traffic_out_bytes = 0").run();
+      this.db.query("DELETE FROM ip_traffic").run();
+      this.db.query("DELETE FROM traffic_rollups").run();
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
   rowToTunnelConfig(row: TunnelRow): TunnelConfig {

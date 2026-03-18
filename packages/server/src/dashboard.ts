@@ -358,6 +358,7 @@ const CSS = `
   .traffic-subtabs { display:flex; gap:0.55rem; margin:0.35rem 0 0.8rem; }
   .traffic-subtab { background:#0f172a; color:#fdba74; border:1px solid #334155; border-radius:8px; padding:0.44rem 0.8rem; font-size:0.84rem; font-weight:600; }
   .traffic-subtab.active { background:#c2410c; border-color:#ea580c; color:#fff; }
+  .traffic-subtabs-row { display:flex; justify-content:space-between; align-items:center; gap:0.75rem; flex-wrap:wrap; }
   .traffic-view { display:none; }
   .traffic-view.active { display:block; }
   .traffic-caption { color:#94a3b8; font-size:0.85rem; margin-bottom:0.75rem; }
@@ -698,9 +699,12 @@ function trafficPage(
     publicIp,
     content: `
   <h1>Data Tracking</h1>
-  <div class="traffic-subtabs">
-    <button class="traffic-subtab active" id="traffic-subtab-ips" type="button">Top IPs</button>
-    <button class="traffic-subtab" id="traffic-subtab-tunnels" type="button">Tunnel Totals</button>
+  <div class="traffic-subtabs-row">
+    <div class="traffic-subtabs">
+      <button class="traffic-subtab active" id="traffic-subtab-ips" type="button">Top IPs</button>
+      <button class="traffic-subtab" id="traffic-subtab-tunnels" type="button">Tunnel Totals</button>
+    </div>
+    <button class="btn btn-danger" id="clear-traffic-btn" type="button">Clear Data Tracking</button>
   </div>
 
   <section class="traffic-view active" id="traffic-view-ips">
@@ -923,6 +927,29 @@ const ipsTabBtn = document.getElementById('traffic-subtab-ips');
 if (ipsTabBtn) ipsTabBtn.addEventListener('click', () => setTrafficSubtab('ips'));
 const tunnelsTabBtn = document.getElementById('traffic-subtab-tunnels');
 if (tunnelsTabBtn) tunnelsTabBtn.addEventListener('click', () => setTrafficSubtab('tunnels'));
+const clearTrafficBtn = document.getElementById('clear-traffic-btn');
+if (clearTrafficBtn) {
+  clearTrafficBtn.addEventListener('click', async () => {
+    if (!confirm('Clear all tracked tunnel and IP traffic data?')) return;
+    clearTrafficBtn.disabled = true;
+    const originalText = clearTrafficBtn.textContent;
+    clearTrafficBtn.textContent = 'Clearing...';
+    try {
+      const res = await fetch('/api/traffic/clear', { method: 'POST' });
+      if (!res.ok) {
+        window.showToast('Failed to clear traffic data');
+        return;
+      }
+      window.showToast('Traffic data cleared', 'success');
+      await refreshTraffic();
+    } catch {
+      window.showToast('Failed to clear traffic data');
+    } finally {
+      clearTrafficBtn.disabled = false;
+      clearTrafficBtn.textContent = originalText;
+    }
+  });
+}
 
 setTrafficSubtab('ips');
 
@@ -1411,8 +1438,9 @@ export function startDashboard(opts: {
   publicIp: string;
   reservedPublicPorts?: number[];
   onTunnelsChanged: () => Promise<void>;
+  onClearTraffic?: () => void;
 }): void {
-  const { port, credentials, db, agentManager, publicIp, reservedPublicPorts, onTunnelsChanged } = opts;
+  const { port, credentials, db, agentManager, publicIp, reservedPublicPorts, onTunnelsChanged, onClearTraffic } = opts;
   const envAgentPort = Number.parseInt(process.env.AGENT_PORT ?? "7000", 10);
   const blockedPrivilegedPortMax = 1023;
   const allowedPrivilegedPorts = new Set<number>([80, 443]);
@@ -1655,6 +1683,11 @@ export function startDashboard(opts: {
               ipDir: parseSortDir(url.searchParams.get("ipDir")),
             }),
           );
+        }
+
+        if (url.pathname === "/api/traffic/clear" && req.method === "POST") {
+          onClearTraffic?.();
+          return json({ ok: true });
         }
 
         if (url.pathname === "/api/tunnels" && req.method === "POST") {

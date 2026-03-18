@@ -156,9 +156,25 @@ export class TunnelManager {
 
   private parsePeerIp(peerAddr: string): string {
     if (!peerAddr) return "unknown";
-    const lastColon = peerAddr.lastIndexOf(":");
-    if (lastColon <= 0) return this.normalizeIp(peerAddr);
-    return this.normalizeIp(peerAddr.slice(0, lastColon));
+    const raw = String(peerAddr).trim();
+    if (!raw) return "unknown";
+
+    // Bracketed IPv6 host:port form, e.g. [2001:db8::1]:443
+    if (raw.startsWith("[")) {
+      const end = raw.indexOf("]");
+      if (end > 1) return this.normalizeIp(raw.slice(1, end));
+      return this.normalizeIp(raw);
+    }
+
+    // IPv4 host:port form, e.g. 203.0.113.10:443
+    const colonCount = (raw.match(/:/g) ?? []).length;
+    if (raw.includes(".") && colonCount === 1) {
+      const idx = raw.lastIndexOf(":");
+      return this.normalizeIp(raw.slice(0, idx));
+    }
+
+    // Raw IP address (IPv4, IPv6, or IPv4-mapped IPv6)
+    return this.normalizeIp(raw);
   }
 
   private ensureIpTrafficState(tunnelId: string, remoteIpRaw: string): IpTrafficState {
@@ -591,7 +607,7 @@ export class TunnelManager {
       this.addTrafficOut(tcpStream.tunnelId, payload.length);
       this.addIpTrafficOut(
         tcpStream.tunnelId,
-        this.parsePeerIp(tcpStream.clientSocket.remoteAddress ?? "unknown"),
+        this.normalizeIp(tcpStream.clientSocket.remoteAddress ?? "unknown"),
         payload.length,
       );
       tcpStream.clientSocket.write(payload);
@@ -641,6 +657,12 @@ export class TunnelManager {
     for (const streamId of udpToClose) {
       this.closeUdpStream(streamId, "agent_disconnected", false);
     }
+  }
+
+  clearTrafficData(): void {
+    this.trafficByTunnel.clear();
+    this.trafficByIp.clear();
+    this.db.clearTrafficData();
   }
 
   private stopListener(tunnelId: string, listener: Listener): Promise<void> {

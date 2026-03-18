@@ -60,6 +60,7 @@ export class Server {
       publicIp: this.config.publicIp,
       reservedPublicPorts: [this.config.agentPort, this.config.dashboardPort],
       onTunnelsChanged: () => this.reloadTunnels(),
+      onClearTraffic: () => this.tunnelManager.clearTrafficData(),
     });
   }
 
