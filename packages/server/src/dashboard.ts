@@ -1244,7 +1244,7 @@ async function refreshData() {
 }
 
 refreshData();
-setInterval(refreshData, 1000);
+setInterval(refreshData, 500);
 </script>
 `,
   });

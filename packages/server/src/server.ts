@@ -207,7 +207,7 @@ export class Server {
     decoder: FrameDecoder,
     hello: AgentHelloBody,
   ): void {
-    socket.setKeepAlive(true, 5_000);
+    socket.setKeepAlive(true, 500);
 
     const { agentId, agentSecret } = hello;
     const agentRow = this.db.getAgent(agentId);
@@ -251,7 +251,7 @@ export class Server {
 
     let lastPingTimestamp = 0;
 
-    // Send a keepalive heartbeat every 5 seconds to prevent NAT/firewall timeouts.
+    // Send a keepalive heartbeat every 0.5 seconds for faster liveness/latency updates.
     const heartbeatInterval = setInterval(() => {
       if (socket.destroyed) {
         clearInterval(heartbeatInterval);
@@ -263,7 +263,7 @@ export class Server {
       } catch {
         clearInterval(heartbeatInterval);
       }
-    }, 5_000);
+    }, 500);
 
     // Handle frames from this control connection.
     // NOTE: the data listener from handleIncomingConnection() is still active and

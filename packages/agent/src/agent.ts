@@ -17,7 +17,7 @@ import {
   type UdpDataBody,
 } from "@privatefrp/shared";
 
-const HEARTBEAT_INTERVAL_MS = 5_000;
+const HEARTBEAT_INTERVAL_MS = 500;
 const CONTROL_CONNECT_TIMEOUT_MS = 10_000;
 const CONTROL_AUTH_TIMEOUT_MS = 10_000;
 const CONTROL_HEARTBEAT_TIMEOUT_MS = 15_000;
