@@ -12,6 +12,12 @@ export const MsgType = {
   PoolHello: 0x09,
   /** Server → Agent: assign a pooled data connection to a specific tunnel request */
   DialAssign: 0x0a,
+  /** Server → Agent: open a multiplexed stream on the control socket */
+  StreamOpen: 0x0b,
+  /** Bidirectional: stream payload frame on the control socket */
+  StreamData: 0x0c,
+  /** Bidirectional: close a multiplexed stream */
+  StreamClose: 0x0d,
 } as const;
 
 export type MsgTypeValue = (typeof MsgType)[keyof typeof MsgType];
@@ -75,6 +81,23 @@ export interface PoolHelloBody {
 export interface DialAssignBody {
   requestId: string;
   tunnelId: string;
+}
+
+export interface StreamOpenBody {
+  streamId: string;
+  tunnelId: string;
+  kind: "tcp" | "udp";
+  peerAddr?: string; // required for UDP streams
+}
+
+export interface StreamDataBody {
+  streamId: string;
+  payload: string; // base64
+}
+
+export interface StreamCloseBody {
+  streamId: string;
+  reason?: string;
 }
 
 // ─── Frame encoder ────────────────────────────────────────────────────────────

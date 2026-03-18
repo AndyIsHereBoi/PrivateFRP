@@ -8,6 +8,8 @@ import {
   type AgentHelloBody,
   type DataConnHelloBody,
   type PoolHelloBody,
+  type StreamCloseBody,
+  type StreamDataBody,
   type TunnelConfig,
 } from "@privatefrp/shared";
 import type { DB } from "./db";
@@ -273,6 +275,10 @@ export class Server {
           this.agentManager.updateLatency(agentId, Date.now() - body.timestamp);
         }
         this.agentManager.updateHeartbeat(agentId);
+      } else if (frame.msgType === MsgType.StreamData) {
+        this.tunnelManager.handleAgentStreamData(agentId, frame.body as StreamDataBody);
+      } else if (frame.msgType === MsgType.StreamClose) {
+        this.tunnelManager.handleAgentStreamClose(agentId, frame.body as StreamCloseBody);
       } else {
         tunnelLog.warn(`[Server] Unexpected frame on control connection: type=0x${frame.msgType.toString(16)}`);
       }
@@ -285,6 +291,7 @@ export class Server {
 
     socket.on("close", () => {
       clearInterval(heartbeatInterval);
+      this.tunnelManager.closeAgentStreams(agentId);
       this.agentManager.unregister(agentId);
       tunnelLog.log(`[Server] Agent disconnected: ${agentId}`);
       void this.reloadTunnels().catch((err) => {

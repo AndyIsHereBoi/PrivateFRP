@@ -10,6 +10,9 @@ import {
   type DialTcpBody,
   type DialUdpSessionBody,
   type DialAssignBody,
+  type StreamOpenBody,
+  type StreamDataBody,
+  type StreamCloseBody,
   type TunnelConfig,
   type UdpDataBody,
 } from "@privatefrp/shared";
@@ -45,6 +48,19 @@ export interface AgentConfig {
   tlsRejectUnauthorized: boolean;
 }
 
+type TcpStream = {
+  kind: "tcp";
+  tunnel: TunnelConfig;
+  socket: net.Socket;
+};
+
+type UdpStream = {
+  kind: "udp";
+  tunnel: TunnelConfig;
+  socket: dgram.Socket;
+  peerAddr: string;
+};
+
 export class Agent {
   private config: AgentConfig;
   private tunnels: TunnelConfig[] = [];
@@ -75,6 +91,8 @@ export class Agent {
    * Pool maintenance is suspended during reconnects.
    */
   private poolEnabled = false;
+  private tcpStreams = new Map<string, TcpStream>();
+  private udpStreams = new Map<string, UdpStream>();
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -89,6 +107,7 @@ export class Agent {
     this.poolEnabled = false;
     this.cleanupHeartbeat();
     this.cleanupReconnectTimer();
+    this.closeAllStreams(false, "agent_stopped");
     this.destroyAllServerConnections();
   }
 
@@ -185,9 +204,8 @@ export class Agent {
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
           this.tunnels = body.tunnels;
           this.startHeartbeat(socket);
-          // Start pre-warming connections now that we are authenticated
-          this.poolEnabled = true;
-          this.maintainPool();
+          // Single-connection mode: tunnel data is multiplexed over control socket.
+          this.poolEnabled = false;
           break;
         }
 
@@ -207,6 +225,27 @@ export class Agent {
             ),
           );
           break;
+
+        case MsgType.StreamOpen: {
+          const body = frame.body as StreamOpenBody;
+          if (!authenticated) return;
+          this.handleStreamOpen(body);
+          break;
+        }
+
+        case MsgType.StreamData: {
+          const body = frame.body as StreamDataBody;
+          if (!authenticated) return;
+          this.handleStreamData(body);
+          break;
+        }
+
+        case MsgType.StreamClose: {
+          const body = frame.body as StreamCloseBody;
+          if (!authenticated) return;
+          this.closeStream(body.streamId, body.reason ?? "server_closed", false);
+          break;
+        }
 
         case MsgType.DialTcp: {
           const body = frame.body as DialTcpBody;
@@ -270,6 +309,7 @@ export class Agent {
 
   private handleControlDisconnect(reason: string): void {
     if (this.stopping) return;
+    this.closeAllStreams(false, "control_disconnected");
     this.destroyAllServerConnections();
     this.scheduleReconnect(reason);
   }
@@ -341,6 +381,125 @@ export class Agent {
 
   private findTunnel(tunnelId: string): TunnelConfig | undefined {
     return this.tunnels.find((t) => t.id === tunnelId);
+  }
+
+  private sendControlFrame(msgType: number, body: Record<string, unknown>): void {
+    if (!this.socket || this.socket.destroyed) return;
+    this.socket.write(encodeFrame(msgType, body));
+  }
+
+  private handleStreamOpen(body: StreamOpenBody): void {
+    const tunnel = this.findTunnel(body.tunnelId);
+    if (!tunnel) {
+      this.sendControlFrame(MsgType.StreamClose, {
+        streamId: body.streamId,
+        reason: "unknown_tunnel",
+      });
+      return;
+    }
+
+    if (body.kind === "tcp") {
+      const target = net.createConnection({ host: tunnel.targetHost, port: tunnel.targetPort });
+      target.setNoDelay(true);
+
+      this.tcpStreams.set(body.streamId, {
+        kind: "tcp",
+        tunnel,
+        socket: target,
+      });
+
+      target.on("data", (chunk) => {
+        this.sendControlFrame(MsgType.StreamData, {
+          streamId: body.streamId,
+          payload: chunk.toString("base64"),
+        });
+      });
+
+      target.on("error", () => {
+        target.destroy();
+      });
+
+      target.on("close", () => {
+        if (this.tcpStreams.has(body.streamId)) {
+          this.closeStream(body.streamId, "target_closed", true);
+        }
+      });
+
+      return;
+    }
+
+    const udpSock = dgram.createSocket("udp4");
+    this.udpStreams.set(body.streamId, {
+      kind: "udp",
+      tunnel,
+      socket: udpSock,
+      peerAddr: body.peerAddr ?? "",
+    });
+
+    udpSock.on("message", (msg) => {
+      this.sendControlFrame(MsgType.StreamData, {
+        streamId: body.streamId,
+        payload: msg.toString("base64"),
+      });
+    });
+
+    udpSock.on("error", () => {
+      this.closeStream(body.streamId, "udp_socket_error", true);
+    });
+
+    udpSock.bind();
+  }
+
+  private handleStreamData(body: StreamDataBody): void {
+    const tcpStream = this.tcpStreams.get(body.streamId);
+    if (tcpStream) {
+      tcpStream.socket.write(Buffer.from(body.payload, "base64"));
+      return;
+    }
+
+    const udpStream = this.udpStreams.get(body.streamId);
+    if (!udpStream) return;
+    udpStream.socket.send(
+      Buffer.from(body.payload, "base64"),
+      udpStream.tunnel.targetPort,
+      udpStream.tunnel.targetHost,
+    );
+  }
+
+  private closeStream(streamId: string, reason: string, notifyServer: boolean): void {
+    const tcpStream = this.tcpStreams.get(streamId);
+    if (tcpStream) {
+      this.tcpStreams.delete(streamId);
+      if (!tcpStream.socket.destroyed) {
+        tcpStream.socket.destroy();
+      }
+      if (notifyServer) {
+        this.sendControlFrame(MsgType.StreamClose, { streamId, reason });
+      }
+      return;
+    }
+
+    const udpStream = this.udpStreams.get(streamId);
+    if (udpStream) {
+      this.udpStreams.delete(streamId);
+      try {
+        udpStream.socket.close();
+      } catch {
+        // ignore close races on shutdown paths
+      }
+      if (notifyServer) {
+        this.sendControlFrame(MsgType.StreamClose, { streamId, reason });
+      }
+    }
+  }
+
+  private closeAllStreams(notifyServer: boolean, reason: string): void {
+    const streamIds: string[] = [];
+    streamIds.push(...this.tcpStreams.keys());
+    streamIds.push(...this.udpStreams.keys());
+    for (const streamId of streamIds) {
+      this.closeStream(streamId, reason, notifyServer);
+    }
   }
 
   // ─── Warm connection pool ───────────────────────────────────────────────────

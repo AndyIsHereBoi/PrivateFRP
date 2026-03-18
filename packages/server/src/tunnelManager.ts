@@ -1,7 +1,13 @@
 import net from "net";
 import dgram from "dgram";
-import type { TunnelConfig } from "@privatefrp/shared";
-import { encodeFrame, MsgType, FrameDecoder } from "@privatefrp/shared";
+import type {
+  DecodedFrame,
+  StreamCloseBody,
+  StreamDataBody,
+  StreamOpenBody,
+  TunnelConfig,
+} from "@privatefrp/shared";
+import { encodeFrame, MsgType } from "@privatefrp/shared";
 import type { AgentManager } from "./agentManager";
 import type { DB } from "./db";
 import { tunnelLog } from "./logger";
@@ -12,19 +18,12 @@ const TRAFFIC_FLUSH_INTERVAL_MS = 5_000;
 const TRAFFIC_ROLLUP_BUCKET_SECONDS = 300;
 const TRAFFIC_RETENTION_SECONDS = 190 * 24 * 60 * 60;
 
-/**
- * Returns true for errors that are expected when an agent goes offline
- * (e.g. "not connected", dial timeout, agent disconnected mid-dial).
- * These are logged as warnings rather than errors.
- */
-function isExpectedDialError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.includes("not connected") ||
-    msg.includes("timeout") ||
-    msg.includes("disconnected") ||
-    msg.includes("Too many pending dials")
-  );
+function parseNonNegativeIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
 }
 
 interface TcpListener {
@@ -33,17 +32,27 @@ interface TcpListener {
   tunnelId: string;
 }
 
-interface UdpSession {
-  dataConn: net.Socket | import("tls").TLSSocket;
-  lastActivity: number;
-  idleTimer: ReturnType<typeof setTimeout>;
-}
-
 interface UdpListener {
   type: "udp";
   socket: dgram.Socket;
   tunnelId: string;
-  sessions: Map<string, UdpSession>;
+  sessions: Map<string, string>; // peerAddr -> streamId
+}
+
+interface TcpStream {
+  streamId: string;
+  agentId: string;
+  tunnelId: string;
+  clientSocket: net.Socket;
+}
+
+interface UdpStream {
+  streamId: string;
+  agentId: string;
+  tunnelId: string;
+  udpSock: dgram.Socket;
+  peerAddr: string;
+  idleTimer: ReturnType<typeof setTimeout>;
 }
 
 interface TunnelTrafficState {
@@ -79,13 +88,24 @@ export class TunnelManager {
   private trafficByIp: Map<string, IpTrafficState> = new Map();
   private trafficFlushInterval: ReturnType<typeof setInterval>;
   private lastRollupPruneAt = 0;
+  private maxActiveConnectionsPerAgent: number;
+  private tcpStreams: Map<string, TcpStream> = new Map(); // streamId -> tcp stream
+  private udpStreams: Map<string, UdpStream> = new Map(); // streamId -> udp stream
 
   constructor(agentManager: AgentManager, db: DB) {
     this.agentManager = agentManager;
     this.db = db;
+    this.maxActiveConnectionsPerAgent = parseNonNegativeIntEnv("SERVER_MAX_ACTIVE_CONNECTIONS_PER_AGENT", 0);
     this.trafficFlushInterval = setInterval(() => {
       this.flushTrafficToDb();
     }, TRAFFIC_FLUSH_INTERVAL_MS);
+  }
+
+  private isAgentAtConnectionCap(agentId: string): boolean {
+    if (this.maxActiveConnectionsPerAgent <= 0) return false;
+    const agent = this.agentManager.get(agentId);
+    if (!agent) return false;
+    return agent.activeConnections >= this.maxActiveConnectionsPerAgent;
   }
 
   private ensureTrafficState(tunnelId: string): TunnelTrafficState {
@@ -336,85 +356,97 @@ export class TunnelManager {
   }
 
   private async handleTcpConnection(tunnel: TunnelConfig, clientSocket: net.Socket): Promise<void> {
-    const requestId = crypto.randomUUID();
+    const streamId = crypto.randomUUID();
     tunnelLog.log(
-      `[TunnelManager] Inbound TCP on tunnel "${tunnel.name}", requestId=${requestId}`,
+      `[TunnelManager] Inbound TCP on tunnel "${tunnel.name}", streamId=${streamId}`,
     );
 
-    // Track early client disconnect so we can bail after the async dial and
-    // avoid leaking the data socket. Also absorb any early errors.
-    let clientGone = false;
-    const onEarlyClose = () => {
-      clientGone = true;
+    if (this.isAgentAtConnectionCap(tunnel.agentId)) {
+      tunnelLog.warn(
+        `[TunnelManager] Agent ${tunnel.agentId} at active connection cap; dropping streamId=${streamId}`,
+      );
+      clientSocket.destroy();
+      return;
+    }
+
+    const agent = this.agentManager.get(tunnel.agentId);
+    if (!agent || agent.socket.destroyed) {
+      tunnelLog.warn(`[TunnelManager] Agent ${tunnel.agentId} is not connected; dropping streamId=${streamId}`);
+      clientSocket.destroy();
+      return;
+    }
+
+    this.agentManager.incActiveConnections(tunnel.agentId);
+    const remoteIp = this.normalizeIp(clientSocket.remoteAddress ?? "unknown");
+
+    const stream: TcpStream = {
+      streamId,
+      agentId: tunnel.agentId,
+      tunnelId: tunnel.id,
+      clientSocket,
     };
-    const onEarlyError = () => {
-      clientGone = true;
+    this.tcpStreams.set(streamId, stream);
+
+    const releaseStream = (): boolean => {
+      const existing = this.tcpStreams.get(streamId);
+      if (!existing) return false;
+      this.tcpStreams.delete(streamId);
+      this.agentManager.decActiveConnections(tunnel.agentId);
+      return true;
     };
-    clientSocket.once("close", onEarlyClose);
-    clientSocket.once("error", onEarlyError);
+
+    clientSocket.on("data", (chunk: Buffer) => {
+      this.addTrafficIn(tunnel.id, chunk.length);
+      this.addIpTrafficIn(tunnel.id, remoteIp, chunk.length);
+      try {
+        agent.socket.write(
+          encodeFrame(MsgType.StreamData, {
+            streamId,
+            payload: chunk.toString("base64"),
+          } satisfies StreamDataBody),
+        );
+      } catch {
+        clientSocket.destroy();
+      }
+    });
+
+    clientSocket.on("close", () => {
+      const wasActive = releaseStream();
+      if (!wasActive) return;
+      try {
+        agent.socket.write(
+          encodeFrame(MsgType.StreamClose, {
+            streamId,
+            reason: "client_closed",
+          } satisfies StreamCloseBody),
+        );
+      } catch {
+        // ignore
+      }
+    });
+
+    clientSocket.on("error", () => {
+      clientSocket.destroy();
+    });
 
     try {
-      const dataSocket = await this.agentManager.dialTcp(
-        tunnel.agentId,
-        requestId,
-        tunnel.id,
+      agent.socket.write(
+        encodeFrame(MsgType.StreamOpen, {
+          streamId,
+          tunnelId: tunnel.id,
+          kind: "tcp",
+        } satisfies StreamOpenBody),
       );
-
-      clientSocket.removeListener("close", onEarlyClose);
-      clientSocket.removeListener("error", onEarlyError);
-
-      if (clientGone || clientSocket.destroyed) {
-        dataSocket.destroy();
-        return;
-      }
-
-      dataSocket.setNoDelay(true);
-      this.agentManager.incActiveConnections(tunnel.agentId);
-      const remoteIp = this.normalizeIp(clientSocket.remoteAddress ?? "unknown");
-      let connectionReleased = false;
-      const releaseConnection = () => {
-        if (connectionReleased) return;
-        connectionReleased = true;
-        this.agentManager.decActiveConnections(tunnel.agentId);
-      };
-      dataSocket.once("close", releaseConnection);
-
-      // Track tunnel traffic while preserving transparent byte forwarding.
-      clientSocket.on("data", (chunk: Buffer) => {
-        this.addTrafficIn(tunnel.id, chunk.length);
-        this.addIpTrafficIn(tunnel.id, remoteIp, chunk.length);
-      });
-      dataSocket.on("data", (chunk: Buffer) => {
-        this.addTrafficOut(tunnel.id, chunk.length);
-        this.addIpTrafficOut(tunnel.id, remoteIp, chunk.length);
-      });
-
-      clientSocket.pipe(dataSocket);
-      dataSocket.pipe(clientSocket);
-
-      clientSocket.on("error", () => dataSocket.destroy());
-      dataSocket.on("error", () => clientSocket.destroy());
-      clientSocket.on("close", () => dataSocket.destroy());
-      dataSocket.on("close", () => clientSocket.destroy());
-    } catch (err) {
-      clientSocket.removeListener("close", onEarlyClose);
-      clientSocket.removeListener("error", onEarlyError);
-      const msg = err instanceof Error ? err.message : String(err);
-      if (isExpectedDialError(err)) {
-        tunnelLog.warn(
-          `[TunnelManager] Dial skipped for requestId=${requestId} (${msg})`,
-        );
-      } else {
-        tunnelLog.error(`[TunnelManager] Dial failed for requestId=${requestId}: ${msg}`);
-      }
-      if (!clientGone) clientSocket.destroy();
+    } catch {
+      releaseStream();
+      clientSocket.destroy();
     }
   }
 
   private startUdpListener(tunnel: TunnelConfig): Promise<void> {
     return new Promise((resolve, reject) => {
       const sock = dgram.createSocket("udp4");
-      const sessions = new Map<string, UdpSession>();
+      const sessions = new Map<string, string>();
 
       sock.on("message", (msg, rinfo) => {
         const peerAddr = `${rinfo.address}:${rinfo.port}`;
@@ -437,111 +469,178 @@ export class TunnelManager {
     });
   }
 
-  private refreshUdpSession(sessions: Map<string, UdpSession>, peerAddr: string): void {
-    const session = sessions.get(peerAddr);
-    if (!session) return;
-    session.lastActivity = Date.now();
-    clearTimeout(session.idleTimer);
-    session.idleTimer = setTimeout(() => {
-      tunnelLog.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
-      session.dataConn.destroy();
-      sessions.delete(peerAddr);
+  private refreshUdpSessionIdle(streamId: string): void {
+    const stream = this.udpStreams.get(streamId);
+    if (!stream) return;
+    clearTimeout(stream.idleTimer);
+    stream.idleTimer = setTimeout(() => {
+      tunnelLog.log(`[TunnelManager] UDP session idle timeout for peer ${stream.peerAddr}`);
+      this.closeUdpStream(streamId, "idle_timeout");
     }, UDP_SESSION_IDLE_MS);
+  }
+
+  private closeUdpStream(streamId: string, reason: string, notifyAgent = true): void {
+    const stream = this.udpStreams.get(streamId);
+    if (!stream) return;
+
+    this.udpStreams.delete(streamId);
+    const listener = this.listeners.get(stream.tunnelId);
+    if (listener?.type === "udp") {
+      listener.sessions.delete(stream.peerAddr);
+    }
+
+    clearTimeout(stream.idleTimer);
+    this.agentManager.decActiveConnections(stream.agentId);
+
+    const agent = this.agentManager.get(stream.agentId);
+    if (notifyAgent && agent && !agent.socket.destroyed) {
+      try {
+        agent.socket.write(
+          encodeFrame(MsgType.StreamClose, {
+            streamId,
+            reason,
+          } satisfies StreamCloseBody),
+        );
+      } catch {
+        // ignore write failures on closing paths
+      }
+    }
   }
 
   private async handleUdpMessage(
     tunnel: TunnelConfig,
     udpSock: dgram.Socket,
-    sessions: Map<string, UdpSession>,
+    sessions: Map<string, string>,
     peerAddr: string,
     msg: Buffer,
   ): Promise<void> {
-    let session = sessions.get(peerAddr);
+    const existingStreamId = sessions.get(peerAddr);
+    let streamId = existingStreamId;
 
-    if (!session || session.dataConn.destroyed) {
-      const requestId = crypto.randomUUID();
-      tunnelLog.log(
-        `[TunnelManager] New UDP session for tunnel "${tunnel.name}", peer=${peerAddr}, requestId=${requestId}`,
-      );
-
-      let dataConn: net.Socket | import("tls").TLSSocket;
-      try {
-        dataConn = await this.agentManager.dialUdpSession(
-          tunnel.agentId,
-          requestId,
-          tunnel.id,
-          peerAddr,
+    if (!streamId) {
+      if (this.isAgentAtConnectionCap(tunnel.agentId)) {
+        tunnelLog.warn(
+          `[TunnelManager] Agent ${tunnel.agentId} at active connection cap; dropping UDP peer=${peerAddr}`,
         );
-      } catch (err) {
-        const msgText = err instanceof Error ? err.message : String(err);
-        if (isExpectedDialError(err)) {
-          tunnelLog.warn(`[TunnelManager] UDP dial skipped for peer ${peerAddr} (${msgText})`);
-        } else {
-          tunnelLog.error(`[TunnelManager] UDP dial failed for peer ${peerAddr}: ${msgText}`);
-        }
         return;
       }
 
+      const agent = this.agentManager.get(tunnel.agentId);
+      if (!agent || agent.socket.destroyed) {
+        return;
+      }
+
+      streamId = crypto.randomUUID();
+      const currentStreamId = streamId;
       const idleTimer = setTimeout(() => {
-        tunnelLog.log(`[TunnelManager] UDP session idle timeout for peer ${peerAddr}`);
-        dataConn.destroy();
-        sessions.delete(peerAddr);
+        this.closeUdpStream(currentStreamId, "idle_timeout");
       }, UDP_SESSION_IDLE_MS);
 
-      session = { dataConn, lastActivity: Date.now(), idleTimer };
-      sessions.set(peerAddr, session);
+      this.udpStreams.set(streamId, {
+        streamId,
+        agentId: tunnel.agentId,
+        tunnelId: tunnel.id,
+        udpSock,
+        peerAddr,
+        idleTimer,
+      });
+      sessions.set(peerAddr, streamId);
       this.agentManager.incActiveConnections(tunnel.agentId);
-      let sessionReleased = false;
-      const releaseSession = () => {
-        if (sessionReleased) return;
-        sessionReleased = true;
-        this.agentManager.decActiveConnections(tunnel.agentId);
-      };
-      dataConn.once("close", releaseSession);
 
-      const decoder = new FrameDecoder();
-
-      decoder.onFrame = (frame) => {
-        if (frame.msgType !== MsgType.UdpData) return;
-        const body = frame.body as { peerAddr: string; payload: string };
-        const lastColon = body.peerAddr.lastIndexOf(":");
-        const host = body.peerAddr.slice(0, lastColon);
-        const port = parseInt(body.peerAddr.slice(lastColon + 1), 10);
-        const payload = Buffer.from(body.payload, "base64");
-        const remoteIp = this.parsePeerIp(body.peerAddr);
-        this.addTrafficOut(tunnel.id, payload.length);
-        this.addIpTrafficOut(tunnel.id, remoteIp, payload.length);
-        this.refreshUdpSession(sessions, peerAddr);
-        udpSock.send(payload, port, host);
-      };
-
-      decoder.onError = (err) => {
-        tunnelLog.error(`[TunnelManager] UDP session decoder error:`, err);
-        dataConn.destroy();
-      };
-
-      dataConn.on("data", (chunk: Buffer) => decoder.push(chunk));
-      dataConn.on("close", () => {
-        clearTimeout(session!.idleTimer);
-        sessions.delete(peerAddr);
-      });
-      dataConn.on("error", () => {
-        dataConn.destroy();
-        clearTimeout(session!.idleTimer);
-        sessions.delete(peerAddr);
-      });
+      try {
+        agent.socket.write(
+          encodeFrame(MsgType.StreamOpen, {
+            streamId,
+            tunnelId: tunnel.id,
+            kind: "udp",
+            peerAddr,
+          } satisfies StreamOpenBody),
+        );
+      } catch {
+        this.closeUdpStream(streamId, "open_failed");
+        return;
+      }
     }
 
-    this.refreshUdpSession(sessions, peerAddr);
+    this.refreshUdpSessionIdle(streamId);
     this.addTrafficIn(tunnel.id, msg.length);
     this.addIpTrafficIn(tunnel.id, this.parsePeerIp(peerAddr), msg.length);
 
-    const frame = encodeFrame(MsgType.UdpData, {
-      peerAddr,
-      payload: msg.toString("base64"),
-    });
+    const agent = this.agentManager.get(tunnel.agentId);
+    if (!agent || agent.socket.destroyed) {
+      this.closeUdpStream(streamId, "agent_disconnected");
+      return;
+    }
 
-    session.dataConn.write(frame);
+    try {
+      agent.socket.write(
+        encodeFrame(MsgType.StreamData, {
+          streamId,
+          payload: msg.toString("base64"),
+        } satisfies StreamDataBody),
+      );
+    } catch {
+      this.closeUdpStream(streamId, "write_failed");
+    }
+  }
+
+  handleAgentStreamData(agentId: string, body: StreamDataBody): void {
+    const tcpStream = this.tcpStreams.get(body.streamId);
+    if (tcpStream && tcpStream.agentId === agentId) {
+      const payload = Buffer.from(body.payload, "base64");
+      this.addTrafficOut(tcpStream.tunnelId, payload.length);
+      this.addIpTrafficOut(
+        tcpStream.tunnelId,
+        this.parsePeerIp(tcpStream.clientSocket.remoteAddress ?? "unknown"),
+        payload.length,
+      );
+      tcpStream.clientSocket.write(payload);
+      return;
+    }
+
+    const udpStream = this.udpStreams.get(body.streamId);
+    if (udpStream && udpStream.agentId === agentId) {
+      const payload = Buffer.from(body.payload, "base64");
+      const lastColon = udpStream.peerAddr.lastIndexOf(":");
+      const host = udpStream.peerAddr.slice(0, lastColon);
+      const port = parseInt(udpStream.peerAddr.slice(lastColon + 1), 10);
+      this.addTrafficOut(udpStream.tunnelId, payload.length);
+      this.addIpTrafficOut(udpStream.tunnelId, this.parsePeerIp(udpStream.peerAddr), payload.length);
+      this.refreshUdpSessionIdle(body.streamId);
+      udpStream.udpSock.send(payload, port, host);
+    }
+  }
+
+  handleAgentStreamClose(agentId: string, body: StreamCloseBody): void {
+    const tcpStream = this.tcpStreams.get(body.streamId);
+    if (tcpStream && tcpStream.agentId === agentId) {
+      this.tcpStreams.delete(body.streamId);
+      this.agentManager.decActiveConnections(agentId);
+      tcpStream.clientSocket.destroy();
+      return;
+    }
+
+    const udpStream = this.udpStreams.get(body.streamId);
+    if (udpStream && udpStream.agentId === agentId) {
+      this.closeUdpStream(body.streamId, body.reason ?? "agent_closed", false);
+    }
+  }
+
+  closeAgentStreams(agentId: string): void {
+    for (const [streamId, stream] of this.tcpStreams) {
+      if (stream.agentId !== agentId) continue;
+      this.tcpStreams.delete(streamId);
+      this.agentManager.decActiveConnections(agentId);
+      stream.clientSocket.destroy();
+    }
+
+    const udpToClose: string[] = [];
+    for (const [streamId, stream] of this.udpStreams) {
+      if (stream.agentId === agentId) udpToClose.push(streamId);
+    }
+    for (const streamId of udpToClose) {
+      this.closeUdpStream(streamId, "agent_disconnected", false);
+    }
   }
 
   private stopListener(tunnelId: string, listener: Listener): Promise<void> {
@@ -557,9 +656,8 @@ export class TunnelManager {
     }
 
     return new Promise((resolve) => {
-      for (const session of listener.sessions.values()) {
-        clearTimeout(session.idleTimer);
-        session.dataConn.destroy();
+      for (const streamId of listener.sessions.values()) {
+        this.closeUdpStream(streamId, "listener_stopped", false);
       }
       listener.sessions.clear();
       listener.socket.close(() => {
