@@ -1142,7 +1142,6 @@ function tunnelsPage(
     publicIp,
     content: `
   <h1>Tunnels</h1>
-  <h2>All Tunnels</h2>
   <div id="groups"></div>
 
   <h2>Create Tunnel</h2>
