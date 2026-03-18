@@ -351,11 +351,16 @@ const CSS = `
   .badge-purple { background: #3b0764; color: #c084fc; }
   .card { background: #1e293b; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; }
   .card.compact { padding: 1rem 1.1rem; }
-  .traffic-layout { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:1rem; align-items:start; }
-  .traffic-panel { min-width:0; }
-  .traffic-controls { display:grid; grid-template-columns: 1fr; gap:0.65rem; margin-bottom:0.85rem; }
-  .traffic-controls label { margin-bottom:0.25rem; }
-  .traffic-controls select { margin-bottom:0; }
+  .traffic-toolbar { display:flex; gap:0.65rem; align-items:flex-end; flex-wrap:nowrap; overflow-x:auto; padding-bottom:0.1rem; }
+  .traffic-toolbar > div { min-width: 160px; flex: 0 0 auto; }
+  .traffic-toolbar label { margin-bottom:0.25rem; }
+  .traffic-toolbar select { margin-bottom:0; }
+  .traffic-subtabs { display:flex; gap:0.55rem; margin:0.9rem 0 0.8rem; }
+  .traffic-subtab { background:#0f172a; color:#93c5fd; border:1px solid #334155; border-radius:8px; padding:0.44rem 0.8rem; font-size:0.84rem; font-weight:600; }
+  .traffic-subtab.active { background:#1d4ed8; border-color:#2563eb; color:#fff; }
+  .traffic-view { display:none; }
+  .traffic-view.active { display:block; }
+  .traffic-caption { color:#94a3b8; font-size:0.85rem; margin-bottom:0.75rem; }
   .traffic-table-wrap { overflow-x:auto; }
   label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.35rem; }
   input, select { width: 100%; padding: 0.5rem 0.75rem; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 0.9rem; margin-bottom: 1rem; }
@@ -374,7 +379,8 @@ const CSS = `
     .create-tunnel-grid { grid-template-columns: 1fr; }
   }
   @media (max-width: 980px) {
-    .traffic-layout { grid-template-columns: 1fr; }
+    .traffic-toolbar { flex-wrap:wrap; overflow-x:visible; }
+    .traffic-toolbar > div { min-width: 170px; flex: 1 1 220px; }
   }
   button, .btn { padding: 0.5rem 1.25rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: opacity 0.15s; }
   button:hover, .btn:hover { opacity: 0.85; }
@@ -641,100 +647,101 @@ function trafficPage(
     publicIp,
     content: `
   <h1>Data Tracking</h1>
-  <div class="card compact" style="max-width:320px">
-    <div>
-      <label style="margin-bottom:0.25rem">Range</label>
-      <select id="traffic-window" style="margin-bottom:0">
-        <option value="6h" ${window === "6h" ? "selected" : ""}>Last 6 hours</option>
-        <option value="1d" ${window === "1d" ? "selected" : ""}>Last 1 day</option>
-        <option value="7d" ${window === "7d" ? "selected" : ""}>Last 7 days</option>
-        <option value="1mo" ${window === "1mo" ? "selected" : ""}>Last 1 month</option>
-        <option value="6mo" ${window === "6mo" ? "selected" : ""}>Last 6 months</option>
-      </select>
+  <div class="card compact">
+    <div class="traffic-toolbar">
+      <div>
+        <label>Range</label>
+        <select id="traffic-window">
+          <option value="6h" ${window === "6h" ? "selected" : ""}>Last 6 hours</option>
+          <option value="1d" ${window === "1d" ? "selected" : ""}>Last 1 day</option>
+          <option value="7d" ${window === "7d" ? "selected" : ""}>Last 7 days</option>
+          <option value="1mo" ${window === "1mo" ? "selected" : ""}>Last 1 month</option>
+          <option value="6mo" ${window === "6mo" ? "selected" : ""}>Last 6 months</option>
+        </select>
+      </div>
+      <div>
+        <label>IP sort</label>
+        <select id="ip-sort">
+          <option value="total" ${ipSort === "total" ? "selected" : ""}>Total</option>
+          <option value="in" ${ipSort === "in" ? "selected" : ""}>Incoming</option>
+          <option value="out" ${ipSort === "out" ? "selected" : ""}>Outgoing</option>
+          <option value="ip" ${ipSort === "ip" ? "selected" : ""}>IP</option>
+          <option value="tunnels" ${ipSort === "tunnels" ? "selected" : ""}>Tunnel count</option>
+          <option value="lastSeen" ${ipSort === "lastSeen" ? "selected" : ""}>Last seen</option>
+        </select>
+      </div>
+      <div>
+        <label>IP direction</label>
+        <select id="ip-dir">
+          <option value="desc" ${ipDir === "desc" ? "selected" : ""}>Descending</option>
+          <option value="asc" ${ipDir === "asc" ? "selected" : ""}>Ascending</option>
+        </select>
+      </div>
+      <div>
+        <label>Tunnel sort</label>
+        <select id="tunnel-sort">
+          <option value="total" ${tunnelSort === "total" ? "selected" : ""}>Total</option>
+          <option value="in" ${tunnelSort === "in" ? "selected" : ""}>Incoming</option>
+          <option value="out" ${tunnelSort === "out" ? "selected" : ""}>Outgoing</option>
+          <option value="name" ${tunnelSort === "name" ? "selected" : ""}>Name</option>
+          <option value="type" ${tunnelSort === "type" ? "selected" : ""}>Type</option>
+          <option value="agent" ${tunnelSort === "agent" ? "selected" : ""}>Agent</option>
+        </select>
+      </div>
+      <div>
+        <label>Tunnel direction</label>
+        <select id="tunnel-dir">
+          <option value="desc" ${tunnelDir === "desc" ? "selected" : ""}>Descending</option>
+          <option value="asc" ${tunnelDir === "asc" ? "selected" : ""}>Ascending</option>
+        </select>
+      </div>
     </div>
   </div>
 
-  <div class="traffic-layout">
-    <section class="traffic-panel">
-      <h2>Top IPs</h2>
-      <p style="color:#94a3b8;font-size:0.85rem;margin-bottom:0.75rem">
-        Per-IP traffic is tracked across all tunnels. ${ENABLE_IP_ASN_LOOKUP ? "ASN lookups enabled." : "Set IP_ASN_LOOKUP=true on the server to enable ASN/org lookups."}
-      </p>
-      <div class="card compact traffic-controls">
-        <div>
-          <label>IP sort</label>
-          <select id="ip-sort">
-            <option value="total" ${ipSort === "total" ? "selected" : ""}>Total</option>
-            <option value="in" ${ipSort === "in" ? "selected" : ""}>Incoming</option>
-            <option value="out" ${ipSort === "out" ? "selected" : ""}>Outgoing</option>
-            <option value="ip" ${ipSort === "ip" ? "selected" : ""}>IP</option>
-            <option value="tunnels" ${ipSort === "tunnels" ? "selected" : ""}>Tunnel count</option>
-            <option value="lastSeen" ${ipSort === "lastSeen" ? "selected" : ""}>Last seen</option>
-          </select>
-        </div>
-        <div>
-          <label>IP direction</label>
-          <select id="ip-dir">
-            <option value="desc" ${ipDir === "desc" ? "selected" : ""}>Descending</option>
-            <option value="asc" ${ipDir === "asc" ? "selected" : ""}>Ascending</option>
-          </select>
-        </div>
-      </div>
-      <div class="traffic-table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>IP</th>
-              <th>ASN / Org</th>
-              <th>Tunnels</th>
-              <th>Incoming</th>
-              <th>Outgoing</th>
-              <th>Total</th>
-              <th>Last Seen</th>
-            </tr>
-          </thead>
-          <tbody id="top-ips-tbody">${ipRows || '<tr><td colspan="7" style="color:#64748b;text-align:center">No IP traffic captured yet</td></tr>'}</tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="traffic-panel">
-      <h2>Tunnel Totals</h2>
-      <div class="card compact traffic-controls">
-        <div>
-          <label>Tunnel sort</label>
-          <select id="tunnel-sort">
-            <option value="total" ${tunnelSort === "total" ? "selected" : ""}>Total</option>
-            <option value="in" ${tunnelSort === "in" ? "selected" : ""}>Incoming</option>
-            <option value="out" ${tunnelSort === "out" ? "selected" : ""}>Outgoing</option>
-            <option value="name" ${tunnelSort === "name" ? "selected" : ""}>Name</option>
-            <option value="type" ${tunnelSort === "type" ? "selected" : ""}>Type</option>
-            <option value="agent" ${tunnelSort === "agent" ? "selected" : ""}>Agent</option>
-          </select>
-        </div>
-        <div>
-          <label>Tunnel direction</label>
-          <select id="tunnel-dir">
-            <option value="desc" ${tunnelDir === "desc" ? "selected" : ""}>Descending</option>
-            <option value="asc" ${tunnelDir === "asc" ? "selected" : ""}>Ascending</option>
-          </select>
-        </div>
-      </div>
-      <div class="traffic-table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Tunnel</th>
-              <th>Type</th>
-              <th>Incoming traffic</th>
-              <th>Outgoing traffic</th>
-            </tr>
-          </thead>
-          <tbody id="traffic-tbody">${rows || '<tr><td colspan="4" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
-        </table>
-      </div>
-    </section>
+  <div class="traffic-subtabs">
+    <button class="traffic-subtab active" id="traffic-subtab-ips" type="button">Top IPs</button>
+    <button class="traffic-subtab" id="traffic-subtab-tunnels" type="button">Tunnel Totals</button>
   </div>
+
+  <section class="traffic-view active" id="traffic-view-ips">
+    <h2>Top IPs</h2>
+    <p class="traffic-caption">
+      Per-IP traffic is tracked across all tunnels. ${ENABLE_IP_ASN_LOOKUP ? "ASN lookups enabled." : "Set IP_ASN_LOOKUP=true on the server to enable ASN/org lookups."}
+    </p>
+    <div class="traffic-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>IP</th>
+            <th>ASN / Org</th>
+            <th>Tunnels</th>
+            <th>Incoming</th>
+            <th>Outgoing</th>
+            <th>Total</th>
+            <th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody id="top-ips-tbody">${ipRows || '<tr><td colspan="7" style="color:#64748b;text-align:center">No IP traffic captured yet</td></tr>'}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="traffic-view" id="traffic-view-tunnels">
+    <h2>Tunnel Totals</h2>
+    <div class="traffic-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Tunnel</th>
+            <th>Type</th>
+            <th>Incoming traffic</th>
+            <th>Outgoing traffic</th>
+          </tr>
+        </thead>
+        <tbody id="traffic-tbody">${rows || '<tr><td colspan="4" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
+      </table>
+    </div>
+  </section>
 
 <script>
 function esc(s) {
@@ -752,6 +759,19 @@ function fmtBytes(bytes) {
   }
   const rounded = value >= 10 || idx === 0 ? value.toFixed(0) : value.toFixed(1);
   return rounded + ' ' + units[idx];
+}
+
+function setTrafficSubtab(view) {
+  const ipsBtn = document.getElementById('traffic-subtab-ips');
+  const tunnelsBtn = document.getElementById('traffic-subtab-tunnels');
+  const ipsView = document.getElementById('traffic-view-ips');
+  const tunnelsView = document.getElementById('traffic-view-tunnels');
+  const showIps = view === 'ips';
+
+  if (ipsBtn) ipsBtn.classList.toggle('active', showIps);
+  if (tunnelsBtn) tunnelsBtn.classList.toggle('active', !showIps);
+  if (ipsView) ipsView.classList.toggle('active', showIps);
+  if (tunnelsView) tunnelsView.classList.toggle('active', !showIps);
 }
 async function refreshTraffic() {
   try {
@@ -820,6 +840,13 @@ async function refreshTraffic() {
   const el = document.getElementById(id);
   if (el) el.addEventListener('change', refreshTraffic);
 });
+
+const ipsTabBtn = document.getElementById('traffic-subtab-ips');
+if (ipsTabBtn) ipsTabBtn.addEventListener('click', () => setTrafficSubtab('ips'));
+const tunnelsTabBtn = document.getElementById('traffic-subtab-tunnels');
+if (tunnelsTabBtn) tunnelsTabBtn.addEventListener('click', () => setTrafficSubtab('tunnels'));
+
+setTrafficSubtab('ips');
 
 refreshTraffic();
 setInterval(refreshTraffic, 1000);
