@@ -684,9 +684,9 @@ function trafficPage(
         <td><code>${escHtml(ip.ip)}</code></td>
         <td>${escHtml(asnLabel)}</td>
         <td>${escHtml(String(ip.tunnelCount))}</td>
+        <td>${escHtml(fmtBytes(ip.totalTraffic))}</td>
         <td>${escHtml(fmtBytes(ip.incomingTraffic))}</td>
         <td>${escHtml(fmtBytes(ip.outgoingTraffic))}</td>
-        <td>${escHtml(fmtBytes(ip.totalTraffic))}</td>
         <td>${escHtml(lastSeenLabel)}</td>
       </tr>`;
     })
@@ -751,9 +751,9 @@ function trafficPage(
             <th>IP</th>
             <th>ASN / Org</th>
             <th>Tunnels</th>
+            <th>Total</th>
             <th>Incoming</th>
             <th>Outgoing</th>
-            <th>Total</th>
             <th>Last Seen</th>
           </tr>
         </thead>
@@ -876,9 +876,9 @@ async function refreshTraffic() {
           '<td><code>' + esc(ip.ip) + '</code></td>' +
           '<td>' + esc(asn) + '</td>' +
           '<td>' + esc(String(ip.tunnelCount || 0)) + '</td>' +
+          '<td>' + esc(fmtBytes(ip.totalTraffic)) + '</td>' +
           '<td>' + esc(fmtBytes(ip.incomingTraffic)) + '</td>' +
           '<td>' + esc(fmtBytes(ip.outgoingTraffic)) + '</td>' +
-          '<td>' + esc(fmtBytes(ip.totalTraffic)) + '</td>' +
           '<td>' + esc(lastSeen) + '</td>' +
         '</tr>';
       }).join('');
