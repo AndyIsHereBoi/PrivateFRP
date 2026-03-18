@@ -659,20 +659,17 @@ function trafficPage(
     else byAgent.set(key, [t]);
   }
 
-  const rows = Array.from(byAgent.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([agentName, items]) => {
-      const itemRows = items
-        .map((t) => {
-          return `<tr>
-            <td>${escHtml(t.name)}</td>
-            <td>${escHtml(String(t.type).toUpperCase())}</td>
-            <td>${escHtml(fmtBytes(t.incomingTraffic))}</td>
-            <td>${escHtml(fmtBytes(t.outgoingTraffic))}</td>
-          </tr>`;
-        })
-        .join("\n");
-      return `<tr><td colspan="4" style="background:#111827;color:#fdba74;font-weight:700;border-top:1px solid #334155">${escHtml(agentName)}</td></tr>${itemRows}`;
+  const rows = tunnels
+    .map((t) => {
+      const total = Number(t.incomingTraffic || 0) + Number(t.outgoingTraffic || 0);
+      return `<tr>
+        <td>${escHtml(t.agentName || "Unassigned")}</td>
+        <td>${escHtml(t.name)}</td>
+        <td>${escHtml(String(t.type).toUpperCase())}</td>
+        <td>${escHtml(fmtBytes(total))}</td>
+        <td>${escHtml(fmtBytes(t.incomingTraffic))}</td>
+        <td>${escHtml(fmtBytes(t.outgoingTraffic))}</td>
+      </tr>`;
     })
     .join("\n");
 
@@ -799,13 +796,15 @@ function trafficPage(
       <table>
         <thead>
           <tr>
-            <th>Tunnel</th>
+            <th>Agent</th>
+            <th>Name</th>
             <th>Type</th>
-            <th>Incoming traffic</th>
-            <th>Outgoing traffic</th>
+            <th>Total</th>
+            <th>Incoming</th>
+            <th>Outgoing</th>
           </tr>
         </thead>
-        <tbody id="traffic-tbody">${rows || '<tr><td colspan="4" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
+        <tbody id="traffic-tbody">${rows || '<tr><td colspan="6" style="color:#64748b;text-align:center">No tunnels configured</td></tr>'}</tbody>
       </table>
     </div>
   </section>
@@ -882,27 +881,19 @@ async function refreshTraffic() {
     }
 
     if (!tunnels.length) {
-      tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;text-align:center">No tunnels configured</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b;text-align:center">No tunnels configured</td></tr>';
       return;
     }
-    const byAgent = {};
-    tunnels.forEach(t => {
-      const key = t.agentName || 'Unassigned';
-      if (!byAgent[key]) byAgent[key] = [];
-      byAgent[key].push(t);
-    });
-    const groups = Object.keys(byAgent).sort();
-    tbody.innerHTML = groups.map(agentName => {
-      const groupHeader = '<tr><td colspan="4" style="background:#111827;color:#fdba74;font-weight:700;border-top:1px solid #334155">' + esc(agentName) + '</td></tr>';
-      const rows = byAgent[agentName].map(t => {
-        return '<tr>' +
-          '<td>' + esc(t.name) + '</td>' +
-          '<td>' + esc(String(t.type || '').toUpperCase()) + '</td>' +
-          '<td>' + esc(fmtBytes(t.incomingTraffic)) + '</td>' +
-          '<td>' + esc(fmtBytes(t.outgoingTraffic)) + '</td>' +
-        '</tr>';
-      }).join('');
-      return groupHeader + rows;
+    tbody.innerHTML = tunnels.map(t => {
+      const total = Number(t.incomingTraffic || 0) + Number(t.outgoingTraffic || 0);
+      return '<tr>' +
+        '<td>' + esc(t.agentName || 'Unassigned') + '</td>' +
+        '<td>' + esc(t.name) + '</td>' +
+        '<td>' + esc(String(t.type || '').toUpperCase()) + '</td>' +
+        '<td>' + esc(fmtBytes(total)) + '</td>' +
+        '<td>' + esc(fmtBytes(t.incomingTraffic)) + '</td>' +
+        '<td>' + esc(fmtBytes(t.outgoingTraffic)) + '</td>' +
+      '</tr>';
     }).join('');
   } catch (_) {}
 }
