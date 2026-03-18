@@ -479,10 +479,58 @@ function pageShell(opts: {
 (() => {
   const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const wsUrl = wsProtocol + '://' + location.host + '/ws/dashboard';
+  const LOGIN_URL = '/login';
   let ws = null;
   let connectPromise = null;
   let reqSeq = 0;
+  let redirectingToLogin = false;
+  let authCheckPromise = null;
   const pending = new Map();
+
+  function normalizeErrorText(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function isUnauthorizedText(value) {
+    const text = normalizeErrorText(value);
+    return text.includes('unauthorized') || text.includes('auth failed') || text.includes('forbidden');
+  }
+
+  function redirectToLogin() {
+    if (redirectingToLogin) return;
+    redirectingToLogin = true;
+    try {
+      location.replace(LOGIN_URL);
+    } catch {
+      location.href = LOGIN_URL;
+    }
+  }
+
+  async function checkAuthAndRedirect() {
+    if (redirectingToLogin) return true;
+    if (authCheckPromise) return authCheckPromise;
+
+    authCheckPromise = (async () => {
+      try {
+        const res = await fetch('/api/agents', {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+        if (res.status === 401) {
+          redirectToLogin();
+          return true;
+        }
+      } catch {
+        // Ignore network failures: only redirect on explicit unauthorized.
+      } finally {
+        authCheckPromise = null;
+      }
+      return false;
+    })();
+
+    return authCheckPromise;
+  }
 
   function rejectAllPending(reason) {
     for (const [, entry] of pending) {
@@ -522,7 +570,11 @@ function pageShell(opts: {
         clearTimeout(entry.timeout);
 
         if (msg.ok === false) {
-          entry.reject(new Error(String(msg.error || 'WebSocket request failed')));
+          const errText = String(msg.error || 'WebSocket request failed');
+          if (isUnauthorizedText(errText)) {
+            void checkAuthAndRedirect();
+          }
+          entry.reject(new Error(errText));
           return;
         }
 
@@ -534,11 +586,13 @@ function pageShell(opts: {
           connectPromise = null;
           reject(new Error('WebSocket connection failed'));
         }
+        void checkAuthAndRedirect();
       };
 
       socket.onclose = () => {
         ws = null;
         rejectAllPending('WebSocket disconnected');
+        void checkAuthAndRedirect();
       };
     });
 
