@@ -326,6 +326,10 @@ const CSS = `
   .topbar-left { display:flex; align-items:center; gap:0.65rem; min-width:0; flex-wrap: wrap; }
   .brand { font-size: 1.15rem; font-weight: 800; color: #fb923c; letter-spacing: 0.02em; }
   .topbar-right { display:flex; align-items:center; gap:0.5rem; margin-left:auto; }
+  .public-ip-wrap { display:flex; align-items:center; gap:0.45rem; max-width:420px; }
+  .public-ip-label { font-size:0.76rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em; }
+  .public-ip-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:#fed7aa; font-size:0.84rem; background:#0f172a; border:1px solid #334155; border-radius:8px; padding:0.32rem 0.55rem; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .btn-copy { background:#334155; color:#e2e8f0; padding:0.32rem 0.62rem; font-size:0.76rem; border:1px solid #475569; border-radius:8px; }
   h1 { font-size: 1.8rem; font-weight: 700; color: #fb923c; margin-bottom: 0.25rem; }
   h2 { font-size: 1.2rem; font-weight: 600; color: #fdba74; margin: 1.5rem 0 0.75rem; }
   h3 { font-size: 1rem; font-weight: 600; color: #fed7aa; margin: 1rem 0 0.5rem; }
@@ -469,6 +473,7 @@ function pageShell(opts: {
       ${opts.registerAction ? '<a class="tab" href="#" onclick="document.getElementById(\'registerModal\').classList.add(\'open\');return false">Register Agent</a>' : ""}
     </div>
     <div class="topbar-right">
+      ${opts.publicIp ? `<div class="public-ip-wrap"><span class="public-ip-label">Public IP</span><code class="public-ip-value" id="public-ip-value">${escHtml(opts.publicIp)}</code><button class="btn-copy" id="copy-public-ip-btn" type="button">Copy</button></div>` : ""}
       <form method="POST" action="/logout" style="display:inline">
         <button class="btn btn-danger" type="submit">Sign Out</button>
       </form>
@@ -481,6 +486,7 @@ function pageShell(opts: {
   const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const wsUrl = wsProtocol + '://' + location.host + '/ws/dashboard';
   const LOGIN_URL = '/login';
+  const PUBLIC_IP = ${JSON.stringify(opts.publicIp)};
   let ws = null;
   let connectPromise = null;
   let reqSeq = 0;
@@ -626,6 +632,27 @@ function pageShell(opts: {
       el.remove();
     }, 4200);
   };
+
+  const copyPublicIpBtn = document.getElementById('copy-public-ip-btn');
+  if (copyPublicIpBtn && PUBLIC_IP) {
+    copyPublicIpBtn.addEventListener('click', async () => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(PUBLIC_IP);
+        } else {
+          const el = document.createElement('textarea');
+          el.value = PUBLIC_IP;
+          document.body.appendChild(el);
+          el.select();
+          document.execCommand('copy');
+          el.remove();
+        }
+        window.showToast('Public IP copied', 'success');
+      } catch {
+        window.showToast('Failed to copy public IP');
+      }
+    });
+  }
 })();
 </script>
 <div class="container">
@@ -843,6 +870,7 @@ function setTrafficSubtab(view) {
   if (ipsView) ipsView.classList.toggle('active', showIps);
   if (tunnelsView) tunnelsView.classList.toggle('active', !showIps);
 }
+let lastTrafficRenderKey = '';
 async function refreshTraffic() {
   try {
     const trafficWindowIps = document.getElementById('traffic-window-ips');
@@ -863,6 +891,9 @@ async function refreshTraffic() {
     });
     const tunnels = Array.isArray(payload) ? payload : (payload.tunnels || []);
     const topIps = Array.isArray(payload) ? [] : (payload.topIps || []);
+    const renderKey = JSON.stringify({ tunnels, topIps });
+    if (renderKey === lastTrafficRenderKey) return;
+    lastTrafficRenderKey = renderKey;
     const ipTbody = document.getElementById('top-ips-tbody');
     const tbody = document.getElementById('traffic-tbody');
 
@@ -1044,10 +1075,14 @@ function normalizeIp(ip) {
   if (!ip) return '';
   return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
 }
+let lastAgentsRenderKey = '';
 async function refreshAgents() {
   try {
     const agents = await window.dashboardWsRequest('agents', {});
     const tbody = document.getElementById('agents-tbody');
+    const renderKey = JSON.stringify(agents || []);
+    if (renderKey === lastAgentsRenderKey) return;
+    lastAgentsRenderKey = renderKey;
     if (!agents.length) {
       tbody.innerHTML = '<tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>';
       return;
@@ -1153,6 +1188,7 @@ function tunnelsPage(
           <select name="type">
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
+            <option value="tcp+udp">TCP + UDP</option>
           </select>
         </div>
         <div><label>Name</label><input name="name" placeholder="my-tunnel" required></div>
@@ -1176,6 +1212,7 @@ function tunnelsPage(
         <select name="type" id="editType">
           <option value="tcp">TCP</option>
           <option value="udp">UDP</option>
+          <option value="tcp+udp">TCP + UDP</option>
         </select>
         <label>Public Port</label><input name="listenPort" id="editListenPort" type="number" min="1" max="65535" required>
         <label>Local Service Host</label><input name="targetHost" id="editTargetHost" required>
@@ -1194,6 +1231,7 @@ const PUBLIC_IP = ${JSON.stringify(publicIp)};
 let AGENTS = ${safeAgents};
 let TUNNELS = ${safeTunnels};
 let agentSelectsFrozen = false;
+let lastTunnelsRenderKey = '';
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');
@@ -1238,7 +1276,9 @@ function renderGroups() {
       const rows = byAgent[id].map(t => {
         const badge = t.type === 'tcp'
           ? '<span class="badge badge-blue">TCP</span>'
-          : '<span class="badge badge-purple">UDP</span>';
+          : t.type === 'udp'
+          ? '<span class="badge badge-purple">UDP</span>'
+          : '<span class="badge badge-blue">TCP</span> <span class="badge badge-purple">UDP</span>';
         const stateBadge = t.enabled
           ? '<span class="badge badge-green">Enabled</span>'
           : '<span class="badge badge-gray">Disabled</span>';
@@ -1352,6 +1392,9 @@ async function refreshData() {
       window.dashboardWsRequest('agents', {}),
       window.dashboardWsRequest('tunnels', {}),
     ]);
+    const renderKey = JSON.stringify({ agents: agents || [], tunnels: tunnels || [] });
+    if (renderKey === lastTunnelsRenderKey) return;
+    lastTunnelsRenderKey = renderKey;
     AGENTS = agents;
     TUNNELS = tunnels;
     const createSelect = document.getElementById('agentSelect');
@@ -1703,7 +1746,9 @@ export function startDashboard(opts: {
         if (!name || !type || !listenPort || !targetHost || !targetPort || agentId === undefined) {
           return json({ error: "Missing required fields" }, 400);
         }
-        if (type !== "tcp" && type !== "udp") return json({ error: "type must be tcp or udp" }, 400);
+        if (type !== "tcp" && type !== "udp" && type !== "tcp+udp") {
+          return json({ error: "type must be tcp, udp, or tcp+udp" }, 400);
+        }
         const listenPortNum = Number.parseInt(listenPort, 10);
         const targetPortNum = Number.parseInt(targetPort, 10);
         if (!Number.isInteger(listenPortNum) || listenPortNum < 1 || listenPortNum > 65535) {
@@ -1753,7 +1798,9 @@ export function startDashboard(opts: {
         if (!name || !type || !listenPort || !targetHost || !targetPort || agentId === undefined) {
           return json({ error: "Missing required fields" }, 400);
         }
-        if (type !== "tcp" && type !== "udp") return json({ error: "type must be tcp or udp" }, 400);
+        if (type !== "tcp" && type !== "udp" && type !== "tcp+udp") {
+          return json({ error: "type must be tcp, udp, or tcp+udp" }, 400);
+        }
         const listenPortNum = Number.parseInt(listenPort, 10);
         const targetPortNum = Number.parseInt(targetPort, 10);
         if (!Number.isInteger(listenPortNum) || listenPortNum < 1 || listenPortNum > 65535) {

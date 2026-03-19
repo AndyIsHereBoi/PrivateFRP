@@ -26,7 +26,7 @@ export type MsgTypeValue = (typeof MsgType)[keyof typeof MsgType];
 export interface TunnelConfig {
   id: string;
   name: string;
-  type: "tcp" | "udp";
+  type: "tcp" | "udp" | "tcp+udp";
   listenPort: number;
   targetHost: string;
   targetPort: number;

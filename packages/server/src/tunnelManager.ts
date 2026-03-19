@@ -39,6 +39,14 @@ interface UdpListener {
   sessions: Map<string, string>; // peerAddr -> streamId
 }
 
+interface DualListener {
+  type: "tcp+udp";
+  tunnelId: string;
+  tcpServer: net.Server;
+  udpSocket: dgram.Socket;
+  sessions: Map<string, string>; // peerAddr -> streamId
+}
+
 interface TcpStream {
   streamId: string;
   agentId: string;
@@ -78,7 +86,7 @@ interface IpTrafficState {
   dirty: boolean;
 }
 
-type Listener = TcpListener | UdpListener;
+type Listener = TcpListener | UdpListener | DualListener;
 
 export class TunnelManager {
   private listeners: Map<string, Listener> = new Map(); // tunnelId -> Listener
@@ -99,6 +107,26 @@ export class TunnelManager {
     this.trafficFlushInterval = setInterval(() => {
       this.flushTrafficToDb();
     }, TRAFFIC_FLUSH_INTERVAL_MS);
+  }
+
+  private listenerMatchesTunnel(listener: Listener, tunnel: TunnelConfig): boolean {
+    if (listener.type !== tunnel.type) return false;
+
+    if (listener.type === "tcp") {
+      const addr = listener.server.address();
+      if (!addr || typeof addr === "string") return false;
+      return addr.port === tunnel.listenPort;
+    }
+
+    if (listener.type === "udp") {
+      const addr = listener.socket.address();
+      return addr.port === tunnel.listenPort;
+    }
+
+    const tcpAddr = listener.tcpServer.address();
+    if (!tcpAddr || typeof tcpAddr === "string") return false;
+    const udpAddr = listener.udpSocket.address();
+    return tcpAddr.port === tunnel.listenPort && udpAddr.port === tunnel.listenPort;
   }
 
   private isAgentAtConnectionCap(agentId: string): boolean {
@@ -324,9 +352,16 @@ export class TunnelManager {
       }
     }
 
-    // Start new listeners
+    // Start missing listeners and restart listeners with changed protocol/port.
     for (const tunnel of tunnels) {
-      if (!this.listeners.has(tunnel.id)) {
+      const existing = this.listeners.get(tunnel.id);
+      if (!existing) {
+        await this.startListener(tunnel);
+        continue;
+      }
+
+      if (!this.listenerMatchesTunnel(existing, tunnel)) {
+        await this.stopListener(tunnel.id, existing);
         await this.startListener(tunnel);
       }
     }
@@ -337,16 +372,31 @@ export class TunnelManager {
 
     try {
       if (tunnel.type === "tcp") {
-        await this.startTcpListener(tunnel);
+        this.listeners.set(tunnel.id, await this.startTcpListener(tunnel));
+      } else if (tunnel.type === "udp") {
+        this.listeners.set(tunnel.id, await this.startUdpListener(tunnel));
       } else {
-        await this.startUdpListener(tunnel);
+        const tcp = await this.startTcpListener(tunnel);
+        try {
+          const udp = await this.startUdpListener(tunnel);
+          this.listeners.set(tunnel.id, {
+            type: "tcp+udp",
+            tunnelId: tunnel.id,
+            tcpServer: tcp.server,
+            udpSocket: udp.socket,
+            sessions: udp.sessions,
+          });
+        } catch (err) {
+          await this.stopListener(tunnel.id, tcp);
+          throw err;
+        }
       }
     } catch (err) {
       tunnelLog.error(`[TunnelManager] Failed to start listener for tunnel ${tunnel.id}:`, err);
     }
   }
 
-  private startTcpListener(tunnel: TunnelConfig): Promise<void> {
+  private startTcpListener(tunnel: TunnelConfig): Promise<TcpListener> {
     return new Promise((resolve, reject) => {
       const server = net.createServer({ allowHalfOpen: false });
 
@@ -363,8 +413,7 @@ export class TunnelManager {
         tunnelLog.log(
           `[TunnelManager] TCP listener started for tunnel "${tunnel.name}" on port ${tunnel.listenPort}`,
         );
-        this.listeners.set(tunnel.id, { type: "tcp", server, tunnelId: tunnel.id });
-        resolve();
+        resolve({ type: "tcp", server, tunnelId: tunnel.id });
       });
 
       server.once("error", reject);
@@ -459,7 +508,7 @@ export class TunnelManager {
     }
   }
 
-  private startUdpListener(tunnel: TunnelConfig): Promise<void> {
+  private startUdpListener(tunnel: TunnelConfig): Promise<UdpListener> {
     return new Promise((resolve, reject) => {
       const sock = dgram.createSocket("udp4");
       const sessions = new Map<string, string>();
@@ -477,8 +526,7 @@ export class TunnelManager {
         tunnelLog.log(
           `[TunnelManager] UDP listener started for tunnel "${tunnel.name}" on port ${tunnel.listenPort}`,
         );
-        this.listeners.set(tunnel.id, { type: "udp", socket: sock, tunnelId: tunnel.id, sessions });
-        resolve();
+        resolve({ type: "udp", socket: sock, tunnelId: tunnel.id, sessions });
       });
 
       sock.once("error", reject);
@@ -502,6 +550,8 @@ export class TunnelManager {
     this.udpStreams.delete(streamId);
     const listener = this.listeners.get(stream.tunnelId);
     if (listener?.type === "udp") {
+      listener.sessions.delete(stream.peerAddr);
+    } else if (listener?.type === "tcp+udp") {
       listener.sessions.delete(stream.peerAddr);
     }
 
@@ -674,6 +724,27 @@ export class TunnelManager {
           tunnelLog.log(`[TunnelManager] TCP listener stopped for tunnel ${tunnelId}`);
           resolve();
         });
+      });
+    }
+
+    if (listener.type === "tcp+udp") {
+      return new Promise((resolve) => {
+        for (const streamId of listener.sessions.values()) {
+          this.closeUdpStream(streamId, "listener_stopped", false);
+        }
+        listener.sessions.clear();
+
+        let remaining = 2;
+        const done = () => {
+          remaining -= 1;
+          if (remaining <= 0) {
+            tunnelLog.log(`[TunnelManager] TCP+UDP listeners stopped for tunnel ${tunnelId}`);
+            resolve();
+          }
+        };
+
+        listener.tcpServer.close(done);
+        listener.udpSocket.close(done);
       });
     }
 

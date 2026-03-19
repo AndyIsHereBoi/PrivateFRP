@@ -190,7 +190,7 @@ export class DB {
   createTunnel(
     id: string,
     name: string,
-    type: "tcp" | "udp",
+    type: "tcp" | "udp" | "tcp+udp",
     listenPort: number,
     targetHost: string,
     targetPort: number,
@@ -207,7 +207,7 @@ export class DB {
   updateTunnel(
     id: string,
     name: string,
-    type: "tcp" | "udp",
+    type: "tcp" | "udp" | "tcp+udp",
     listenPort: number,
     targetHost: string,
     targetPort: number,
@@ -364,7 +364,7 @@ export class DB {
     return {
       id: row.id,
       name: row.name,
-      type: row.type as "tcp" | "udp",
+      type: row.type as "tcp" | "udp" | "tcp+udp",
       listenPort: row.listen_port,
       targetHost: row.target_host,
       targetPort: row.target_port,
