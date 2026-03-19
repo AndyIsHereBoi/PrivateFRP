@@ -94,14 +94,10 @@ jobs:
           {
             echo "## PrivateFRP ${CURRENT_TAG}"
             echo
+            echo "### Main Updates"
+            echo
             echo "### Included Commit Subjects"
             echo "${COMMITS}"
-            echo
-            echo "### Attached Binaries"
-            echo "- privatefrp-server-windows-x64.exe"
-            echo "- privatefrp-agent-windows-x64.exe"
-            echo "- privatefrp-server-linux-amd64"
-            echo "- privatefrp-agent-linux-amd64"
           } > release-notes.md
 
       - name: Create draft release with binaries
