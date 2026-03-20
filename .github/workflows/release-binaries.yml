@@ -86,17 +86,18 @@ jobs:
             RANGE="HEAD"
           fi
 
-          COMMITS=$(git log --pretty='- %s (%h)' ${RANGE})
+          COMMITS=$(git log --pretty='- %s ([%h]('${GITHUB_SERVER_URL}'/'${GITHUB_REPOSITORY}'/commit/%H))' ${RANGE})
           if [ -z "${COMMITS}" ]; then
-            COMMITS="- No commit subjects found."
+            COMMITS="- No commits found."
           fi
 
           {
             echo "## PrivateFRP ${CURRENT_TAG}"
             echo
             echo "### Main Updates"
+            echo "- "
             echo
-            echo "### Included Commit Subjects"
+            echo "### Included Commits"
             echo "${COMMITS}"
           } > release-notes.md
 
