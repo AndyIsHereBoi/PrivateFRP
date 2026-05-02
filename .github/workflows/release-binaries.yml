@@ -164,7 +164,7 @@ jobs:
         shell: bash
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
-          SHORT="${GITHUB_SHA:0:7}"
+          SHORT=$(git rev-parse --short HEAD)
           docker buildx build --file "${{ matrix.dockerfile }}" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:latest" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}" \
