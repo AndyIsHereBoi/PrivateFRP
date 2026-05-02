@@ -57,7 +57,7 @@ jobs:
   release:
     name: Create draft release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, docker-images]
 
     steps:
       - name: Checkout
@@ -76,6 +76,7 @@ jobs:
         shell: bash
         run: |
           CURRENT_TAG="${RELEASE_NUMBER}"
+          GHCR_OWNER="${GITHUB_REPOSITORY_OWNER,,}"
 
           if git rev-parse -q --verify "refs/tags/${CURRENT_TAG}" >/dev/null; then
             PREV_TAG=$(git tag --sort=-creatordate | grep -Fxv "${CURRENT_TAG}" | head -n 1)
@@ -99,6 +100,14 @@ jobs:
             echo
             echo "### Main Updates"
             echo "- "
+            echo
+            echo "### Docker Images"
+            echo "- Server package: https://github.com/orgs/${GHCR_OWNER}/packages/container/privatefrp-server"
+            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-server:latest"
+            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-server:${CURRENT_TAG}"
+            echo "- Agent package: https://github.com/orgs/${GHCR_OWNER}/packages/container/privatefrp-agent"
+            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-agent:latest"
+            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-agent:${CURRENT_TAG}"
             echo
             echo "### Included Commits"
             echo "${COMMITS}"
