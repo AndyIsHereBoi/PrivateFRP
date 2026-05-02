@@ -31,6 +31,12 @@ function deleteSession(cookieHeader: string | null): void {
   if (match) sessions.delete(match[1]);
 }
 
+function clearSessionCookieHeaders(): Record<string, string> {
+  return {
+    "Set-Cookie": "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+  };
+}
+
 function normalizeRemoteIp(ip: string | null | undefined): string {
   if (!ip) return "";
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
@@ -443,6 +449,16 @@ function loginPage(error?: string): string {
   </div>
 </div>
 </body></html>`;
+}
+
+function loginResponse(error?: string, status = 200): Response {
+  return new Response(loginPage(error), {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      ...clearSessionCookieHeaders(),
+    },
+  });
 }
 
 function pageShell(opts: {
@@ -1564,14 +1580,14 @@ export function startDashboard(opts: {
 
       try {
         if (url.pathname === "/login") {
-          if (req.method === "GET") return html(loginPage());
+          if (req.method === "GET") return loginResponse();
           if (req.method === "POST") {
             const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
             const isForm = contentType.includes("application/x-www-form-urlencoded") ||
               contentType.includes("multipart/form-data");
             if (!isForm) {
               webLog.warn(`[Dashboard] ${method} ${url.pathname} invalid login content-type: ${contentType || "none"}`);
-              return html(loginPage("Invalid login request"), 400);
+              return loginResponse("Invalid login request", 400);
             }
 
             let form: FormData;
@@ -1579,7 +1595,7 @@ export function startDashboard(opts: {
               form = await req.formData();
             } catch {
               webLog.warn(`[Dashboard] ${method} ${url.pathname} invalid login form body`);
-              return html(loginPage("Invalid login request"), 400);
+              return loginResponse("Invalid login request", 400);
             }
 
             const user = form.get("username")?.toString() ?? "";
@@ -1595,7 +1611,7 @@ export function startDashboard(opts: {
               });
             }
             webLog.warn(`[Dashboard] ${method} ${url.pathname} login rejected for user=${user || "<empty>"}`);
-            return html(loginPage("Invalid username or password"), 401);
+              return loginResponse("Invalid username or password", 401);
           }
         }
 
@@ -1605,7 +1621,7 @@ export function startDashboard(opts: {
             status: 302,
             headers: {
               Location: "/login",
-              "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
+              ...clearSessionCookieHeaders(),
             },
           });
         }
@@ -1614,7 +1630,10 @@ export function startDashboard(opts: {
           const user = validateSession(cookie);
           return new Response(null, {
             status: 302,
-            headers: { Location: user ? "/dashboard/agents" : "/login" },
+            headers: {
+              Location: user ? "/dashboard/agents" : "/login",
+              ...(user ? {} : clearSessionCookieHeaders()),
+            },
           });
         }
 
@@ -1629,8 +1648,22 @@ export function startDashboard(opts: {
 
         const user = validateSession(cookie);
         if (!user) {
-          if (url.pathname.startsWith("/api/")) return json({ error: "Unauthorized" }, 401);
-          return new Response(null, { status: 302, headers: { Location: "/login" } });
+          if (url.pathname.startsWith("/api/")) {
+            return new Response(JSON.stringify({ error: "Unauthorized" }), {
+              status: 401,
+              headers: {
+                "Content-Type": "application/json",
+                ...clearSessionCookieHeaders(),
+              },
+            });
+          }
+          return new Response(null, {
+            status: 302,
+            headers: {
+              Location: "/login",
+              ...clearSessionCookieHeaders(),
+            },
+          });
         }
 
         if ((url.pathname === "/dashboard" || url.pathname === "/dashboard/agents") && req.method === "GET") {
