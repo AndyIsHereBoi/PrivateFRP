@@ -93,6 +93,10 @@ export class Agent {
   private poolEnabled = false;
   private tcpStreams = new Map<string, TcpStream>();
   private udpStreams = new Map<string, UdpStream>();
+  // Track paused local target sockets per control socket to avoid adding
+  // many 'drain' listeners on the same TLSSocket.  Resumed in a single
+  // drain handler when the control socket becomes writable again.
+  private pausedTargetsByControl: WeakMap<tls.TLSSocket, Set<net.Socket>> = new WeakMap();
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -421,9 +425,23 @@ export class Agent {
           target.pause();
           const controlSocket = this.socket;
           if (controlSocket && !controlSocket.destroyed) {
-            controlSocket.once("drain", () => {
-              if (!target.destroyed) target.resume();
-            });
+            let paused = this.pausedTargetsByControl.get(controlSocket);
+            if (!paused) {
+              paused = new Set<net.Socket>();
+              this.pausedTargetsByControl.set(controlSocket, paused);
+              controlSocket.once("drain", () => {
+                const set = this.pausedTargetsByControl.get(controlSocket);
+                if (set) {
+                  for (const s of set) {
+                    try {
+                      if (!s.destroyed) s.resume();
+                    } catch {}
+                  }
+                  this.pausedTargetsByControl.delete(controlSocket);
+                }
+              });
+            }
+            paused.add(target);
           }
         }
       });
@@ -468,9 +486,12 @@ export class Agent {
     if (tcpStream) {
       const wrote = tcpStream.socket.write(Buffer.from(body.payload, "base64"));
       if (!wrote && this.socket && !this.socket.destroyed) {
+        // Pause the control socket until the local client socket drains.
         this.socket.pause();
         tcpStream.socket.once("drain", () => {
-          if (this.socket && !this.socket.destroyed) this.socket.resume();
+          try {
+            if (this.socket && !this.socket.destroyed) this.socket.resume();
+          } catch {}
         });
       }
       return;

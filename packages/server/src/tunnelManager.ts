@@ -99,6 +99,10 @@ export class TunnelManager {
   private maxActiveConnectionsPerAgent: number;
   private tcpStreams: Map<string, TcpStream> = new Map(); // streamId -> tcp stream
   private udpStreams: Map<string, UdpStream> = new Map(); // streamId -> udp stream
+  // Track paused client sockets per agent control socket to avoid adding many
+  // 'drain' listeners on the same agent socket.  When an agent socket drains
+  // we resume all paused clients that targeted it.
+  private pausedClientsByAgentSocket: WeakMap<net.Socket, Set<net.Socket>> = new WeakMap();
 
   constructor(agentManager: AgentManager, db: DB) {
     this.agentManager = agentManager;
@@ -472,9 +476,28 @@ export class TunnelManager {
         );
         if (!wrote) {
           clientSocket.pause();
-          agent.socket.once("drain", () => {
-            if (!clientSocket.destroyed) clientSocket.resume();
-          });
+          try {
+            const agentSock = agent.socket as net.Socket;
+            let paused = this.pausedClientsByAgentSocket.get(agentSock);
+            if (!paused) {
+              paused = new Set<net.Socket>();
+              this.pausedClientsByAgentSocket.set(agentSock, paused);
+              agentSock.once("drain", () => {
+                const set = this.pausedClientsByAgentSocket.get(agentSock);
+                if (set) {
+                  for (const s of set) {
+                    try {
+                      if (!s.destroyed) s.resume();
+                    } catch {}
+                  }
+                  this.pausedClientsByAgentSocket.delete(agentSock);
+                }
+              });
+            }
+            paused.add(clientSocket);
+          } catch {
+            // Best-effort: if agent/socket state changed, ignore and leave client paused
+          }
         }
       } catch {
         clientSocket.destroy();
