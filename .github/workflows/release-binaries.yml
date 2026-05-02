@@ -132,6 +132,12 @@ jobs:
         with:
           ref: ${{ env.DEFAULT_BRANCH }}
 
+      - name: Set lowercase GHCR owner
+        id: ghcr_owner
+        shell: bash
+        run: |
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -146,5 +152,5 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}:latest
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}
+            ghcr.io/${{ steps.ghcr_owner.outputs.owner }}/${{ matrix.image_name }}:latest
+            ghcr.io/${{ steps.ghcr_owner.outputs.owner }}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}
