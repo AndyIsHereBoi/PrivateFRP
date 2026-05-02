@@ -384,8 +384,12 @@ export class Agent {
   }
 
   private sendControlFrame(msgType: number, body: Record<string, unknown>): void {
-    if (!this.socket || this.socket.destroyed) return;
-    this.socket.write(encodeFrame(msgType, body));
+    this.writeControlFrame(msgType, body);
+  }
+
+  private writeControlFrame(msgType: number, body: Record<string, unknown>): boolean {
+    if (!this.socket || this.socket.destroyed) return false;
+    return this.socket.write(encodeFrame(msgType, body));
   }
 
   private handleStreamOpen(body: StreamOpenBody): void {
@@ -409,10 +413,19 @@ export class Agent {
       });
 
       target.on("data", (chunk) => {
-        this.sendControlFrame(MsgType.StreamData, {
+        const wrote = this.writeControlFrame(MsgType.StreamData, {
           streamId: body.streamId,
           payload: chunk.toString("base64"),
         });
+        if (!wrote) {
+          target.pause();
+          const controlSocket = this.socket;
+          if (controlSocket && !controlSocket.destroyed) {
+            controlSocket.once("drain", () => {
+              if (!target.destroyed) target.resume();
+            });
+          }
+        }
       });
 
       target.on("error", () => {
@@ -453,7 +466,13 @@ export class Agent {
   private handleStreamData(body: StreamDataBody): void {
     const tcpStream = this.tcpStreams.get(body.streamId);
     if (tcpStream) {
-      tcpStream.socket.write(Buffer.from(body.payload, "base64"));
+      const wrote = tcpStream.socket.write(Buffer.from(body.payload, "base64"));
+      if (!wrote && this.socket && !this.socket.destroyed) {
+        this.socket.pause();
+        tcpStream.socket.once("drain", () => {
+          if (this.socket && !this.socket.destroyed) this.socket.resume();
+        });
+      }
       return;
     }
 

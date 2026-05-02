@@ -464,12 +464,18 @@ export class TunnelManager {
       this.addTrafficIn(tunnel.id, chunk.length);
       this.addIpTrafficIn(tunnel.id, remoteIp, chunk.length);
       try {
-        agent.socket.write(
+        const wrote = agent.socket.write(
           encodeFrame(MsgType.StreamData, {
             streamId,
             payload: chunk.toString("base64"),
           } satisfies StreamDataBody),
         );
+        if (!wrote) {
+          clientSocket.pause();
+          agent.socket.once("drain", () => {
+            if (!clientSocket.destroyed) clientSocket.resume();
+          });
+        }
       } catch {
         clientSocket.destroy();
       }
@@ -660,7 +666,16 @@ export class TunnelManager {
         this.normalizeIp(tcpStream.clientSocket.remoteAddress ?? "unknown"),
         payload.length,
       );
-      tcpStream.clientSocket.write(payload);
+      const wrote = tcpStream.clientSocket.write(payload);
+      if (!wrote) {
+        const agent = this.agentManager.get(agentId);
+        if (agent && !agent.socket.destroyed) {
+          agent.socket.pause();
+          tcpStream.clientSocket.once("drain", () => {
+            if (!agent.socket.destroyed) agent.socket.resume();
+          });
+        }
+      }
       return;
     }
 
