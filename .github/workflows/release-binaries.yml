@@ -27,6 +27,12 @@ jobs:
         with:
           ref: ${{ env.DEFAULT_BRANCH }}
 
+      - name: Set short commit SHA
+        id: short_sha
+        shell: bash
+        run: |
+          echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -154,12 +160,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: |
-            ghcr.io/${{ steps.ghcr_owner.outputs.owner }}/${{ matrix.image_name }}:latest
-            ghcr.io/${{ steps.ghcr_owner.outputs.owner }}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}
+      - name: Build and push image (buildx)
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          SHORT="${GITHUB_SHA:0:7}"
+          docker buildx build --file "${{ matrix.dockerfile }}" \
+            --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:latest" \
+            --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}" \
+            --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${SHORT}" \
+            --push .
