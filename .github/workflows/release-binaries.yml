@@ -83,6 +83,7 @@ jobs:
         run: |
           CURRENT_TAG="${RELEASE_NUMBER}"
           GHCR_OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
 
           if git rev-parse -q --verify "refs/tags/${CURRENT_TAG}" >/dev/null; then
             PREV_TAG=$(git tag --sort=-creatordate | grep -Fxv "${CURRENT_TAG}" | head -n 1)
@@ -109,11 +110,11 @@ jobs:
             echo
             echo "### Docker Images"
             echo "- Server:"
-            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-server:latest\`"
             echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-server:${CURRENT_TAG}\`"
+            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-server:${SHORT_SHA}\`"
             echo "- Agent:"
-            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-agent:latest\`"
             echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-agent:${CURRENT_TAG}\`"
+            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-agent:${SHORT_SHA}\`"
             echo
             echo "### Included Commits"
             echo "${COMMITS}"
