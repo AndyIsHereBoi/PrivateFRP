@@ -108,12 +108,12 @@ jobs:
             echo "- "
             echo
             echo "### Docker Images"
-            echo "- Server package: https://github.com/orgs/${GHCR_OWNER}/packages/container/privatefrp-server"
-            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-server:latest"
-            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-server:${CURRENT_TAG}"
-            echo "- Agent package: https://github.com/orgs/${GHCR_OWNER}/packages/container/privatefrp-agent"
-            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-agent:latest"
-            echo "  - ghcr.io/${GHCR_OWNER}/privatefrp-agent:${CURRENT_TAG}"
+            echo "- Server:"
+            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-server:latest\`"
+            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-server:${CURRENT_TAG}\`"
+            echo "- Agent:"
+            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-agent:latest\`"
+            echo "  - \`ghcr.io/${GHCR_OWNER}/privatefrp-agent:${CURRENT_TAG}\`"
             echo
             echo "### Included Commits"
             echo "${COMMITS}"
