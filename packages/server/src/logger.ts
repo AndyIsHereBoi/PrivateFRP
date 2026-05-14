@@ -1,18 +1,20 @@
 import path from "path";
 import log4js from "log4js";
 
+// Register rollingFile appender from streamroller
+const streamroller = require("streamroller");
+const log4jsAny: any = log4js;
+log4jsAny.loadAppender("rollingFile", streamroller.RollingFileAppender);
+
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
 const MAX_LOG_BACKUPS = 3;
 
-function createRollingFileConfig(filename: string): any {
+function createRollingFileConfig(logDir: string, filename: string): any {
   return {
-    type: "rollingFile" as const,
-    filename: path.join("./logs", filename),
+    type: "rollingFile",
+    filename: path.join(logDir, filename),
     maxLogSize: MAX_LOG_BYTES,
     backups: MAX_LOG_BACKUPS,
-    pattern: "-yyyy-MM-dd",
-    alwaysIncludePattern: false,
-    compress: true,
   };
 }
 
@@ -34,8 +36,8 @@ function createLog4jsConfig(logDir: string): log4js.Configuration {
           },
         },
       },
-      tunnel: createRollingFileConfig("tunnel.log"),
-      web: createRollingFileConfig("webserver.log"),
+      tunnel: createRollingFileConfig(logDir, "tunnel.log"),
+      web: createRollingFileConfig(logDir, "webserver.log"),
     },
     categories: {
       tunnel: { appenders: ["console", "tunnel"], level: "debug" },
