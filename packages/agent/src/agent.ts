@@ -408,8 +408,17 @@ export class Agent {
     }
 
     if (body.kind === "tcp") {
-      const target = net.createConnection({ host: tunnel.targetHost, port: tunnel.targetPort });
+      agentLog.info(`[Agent] Creating target connection for stream ${body.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
+      const target = net.createConnection({ host: tunnel.targetHost, port: tunnel.targetPort, keepAlive: true });
       target.setNoDelay(true);
+
+      target.on("connect", () => {
+        agentLog.info(`[Agent] Target connected for stream ${body.streamId}`);
+      });
+
+      target.on("close", () => {
+        agentLog.warn(`[Agent] Target connection closed for stream ${body.streamId}, hasData: ${target.writable || target.readable}`);
+      });
 
       this.tcpStreams.set(body.streamId, {
         kind: "tcp",

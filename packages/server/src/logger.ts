@@ -20,18 +20,6 @@ function createLog4jsConfig(logDir) {
     appenders: {
       console: {
         type: "console",
-        layout: {
-          type: "pattern",
-          pattern: "[%d] [%p] %-32x{level}- %m",
-          tokens: {
-            d: () => new Date().toISOString().replace("T", " ").slice(0, 23),
-            level: (logEvent) => {
-              const levelStr = logEvent.level?.toString() ?? "INFO";
-              const padding = " ".repeat(Math.max(0, 32 - levelStr.length));
-              return `${levelStr}${padding}`;
-            },
-          },
-        },
       },
       // File appenders - disabled, kept for reference
       // tunnel: createRollingFileConfig(logDir, "tunnel.log"),
