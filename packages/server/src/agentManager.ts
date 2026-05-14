@@ -2,6 +2,7 @@ import type { TunnelConfig } from "@privatefrp/shared";
 import { encodeFrame, MsgType } from "@privatefrp/shared";
 import type net from "net";
 import type tls from "tls";
+import { tunnelLog } from "./logger";
 
 /** Max age for a pooled socket — discard anything older (may be TCP-idle-closed). */
 const POOL_SOCKET_MAX_AGE_MS = 30_000;
@@ -213,15 +214,20 @@ export class AgentManager {
     tunnelId: string,
   ): Promise<net.Socket | tls.TLSSocket> {
     const agent = this.agents.get(agentId);
-    if (!agent) return Promise.reject(new Error(`Agent ${agentId} not connected`));
+    if (!agent) {
+      tunnelLog.warn(`[AgentManager] Agent ${agentId} not connected for dialTcp`);
+      return Promise.reject(new Error(`Agent ${agentId} not connected`));
+    }
 
     // ── Fast path: use a pre-warmed pool socket ─────────────────────────────
     const poolSocket = this.takeFromPool(agent);
     if (poolSocket) {
       try {
+        tunnelLog.log(`[AgentManager] Using pooled socket for dialTcp request ${requestId}`);
         poolSocket.write(encodeFrame(MsgType.DialAssign, { requestId, tunnelId }));
         return Promise.resolve(poolSocket);
       } catch (e) {
+        tunnelLog.error(`[AgentManager] Error using pooled socket for dialTcp request ${requestId}:`, e);
         poolSocket.destroy();
         // Fall through to slow path
       }
@@ -229,22 +235,26 @@ export class AgentManager {
 
     // ── Slow path: on-demand DialTcp ────────────────────────────────────────
     if (agent.pendingDials.size >= MAX_PENDING_DIALS) {
+      tunnelLog.warn(`[AgentManager] Too many pending dials for agent ${agentId}`);
       return Promise.reject(new Error("Too many pending dials — agent overloaded"));
     }
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         agent.pendingDials.delete(requestId);
+        tunnelLog.warn(`[AgentManager] Dial timeout for request ${requestId}`);
         reject(new Error(`Dial timeout for request ${requestId}`));
       }, DIAL_TIMEOUT_MS);
 
       agent.pendingDials.set(requestId, { requestId, tunnelId, resolve, reject, timer });
 
       try {
+        tunnelLog.log(`[AgentManager] Sending DialTcp to agent ${agentId} for request ${requestId}`);
         agent.socket.write(encodeFrame(MsgType.DialTcp, { requestId, tunnelId }));
       } catch (e) {
         clearTimeout(timer);
         agent.pendingDials.delete(requestId);
+        tunnelLog.error(`[AgentManager] Error sending DialTcp to agent ${agentId}:`, e);
         reject(e);
       }
     });

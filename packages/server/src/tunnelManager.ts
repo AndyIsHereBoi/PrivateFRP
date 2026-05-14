@@ -475,6 +475,7 @@ export class TunnelManager {
           } satisfies StreamDataBody),
         );
         if (!wrote) {
+          tunnelLog.warn(`[TunnelManager] Agent control socket write failed for stream ${streamId} - pausing client socket`);
           clientSocket.pause();
           try {
             const agentSock = agent.socket as net.Socket;
@@ -482,7 +483,10 @@ export class TunnelManager {
             if (!paused) {
               paused = new Set<net.Socket>();
               this.pausedClientsByAgentSocket.set(agentSock, paused);
+              tunnelLog.log(`[TunnelManager] Created new paused clients set for agent socket, count: ${paused.size}`);
+              const pausedRef = paused;
               agentSock.once("drain", () => {
+                tunnelLog.log(`[TunnelManager] Agent control socket drained, resuming ${pausedRef.size} paused clients`);
                 const set = this.pausedClientsByAgentSocket.get(agentSock);
                 if (set) {
                   for (const s of set) {
@@ -495,6 +499,7 @@ export class TunnelManager {
               });
             }
             paused.add(clientSocket);
+            tunnelLog.log(`[TunnelManager] Total paused clients for this agent: ${paused.size}`);
           } catch {
             // Best-effort: if agent/socket state changed, ignore and leave client paused
           }
@@ -505,8 +510,12 @@ export class TunnelManager {
     });
 
     clientSocket.on("close", () => {
+      tunnelLog.log(`[TunnelManager] Client socket closed for stream ${streamId}`);
       const wasActive = releaseStream();
-      if (!wasActive) return;
+      if (!wasActive) {
+        tunnelLog.warn(`[TunnelManager] Stream ${streamId} already released on client close`);
+        return;
+      }
       try {
         agent.socket.write(
           encodeFrame(MsgType.StreamClose, {
@@ -680,8 +689,10 @@ export class TunnelManager {
   }
 
   handleAgentStreamData(agentId: string, body: StreamDataBody): void {
+    tunnelLog.log(`[TunnelManager] handleAgentStreamData called for agent ${agentId}, stream ${body.streamId}`);
     const tcpStream = this.tcpStreams.get(body.streamId);
     if (tcpStream && tcpStream.agentId === agentId) {
+      tunnelLog.log(`[TunnelManager] Handling TCP stream data for stream ${body.streamId}`);
       const payload = Buffer.from(body.payload, "base64");
       this.addTrafficOut(tcpStream.tunnelId, payload.length);
       this.addIpTrafficOut(
@@ -689,29 +700,51 @@ export class TunnelManager {
         this.normalizeIp(tcpStream.clientSocket.remoteAddress ?? "unknown"),
         payload.length,
       );
-      const wrote = tcpStream.clientSocket.write(payload);
-      if (!wrote) {
-        const agent = this.agentManager.get(agentId);
-        if (agent && !agent.socket.destroyed) {
-          agent.socket.pause();
-          tcpStream.clientSocket.once("drain", () => {
-            if (!agent.socket.destroyed) agent.socket.resume();
-          });
+      try {
+        const wrote = tcpStream.clientSocket.write(payload);
+        if (!wrote) {
+          tunnelLog.log(`[TunnelManager] TCP client socket paused for stream ${body.streamId}`);
+          const agent = this.agentManager.get(agentId);
+          if (agent && !agent.socket.destroyed) {
+            agent.socket.pause();
+            tcpStream.clientSocket.once("drain", () => {
+              if (!agent.socket.destroyed) {
+                tunnelLog.log(`[TunnelManager] TCP client socket resumed for stream ${body.streamId}`);
+                agent.socket.resume();
+              }
+            });
+          }
+        } else {
+          tunnelLog.log(`[TunnelManager] TCP data written successfully for stream ${body.streamId}`);
         }
+      } catch (err) {
+        tunnelLog.error(`[TunnelManager] Error writing to TCP client socket for stream ${body.streamId}:`, err);
+        tcpStream.clientSocket.destroy();
       }
       return;
     }
 
     const udpStream = this.udpStreams.get(body.streamId);
     if (udpStream && udpStream.agentId === agentId) {
-      const payload = Buffer.from(body.payload, "base64");
-      const lastColon = udpStream.peerAddr.lastIndexOf(":");
-      const host = udpStream.peerAddr.slice(0, lastColon);
-      const port = parseInt(udpStream.peerAddr.slice(lastColon + 1), 10);
-      this.addTrafficOut(udpStream.tunnelId, payload.length);
-      this.addIpTrafficOut(udpStream.tunnelId, this.parsePeerIp(udpStream.peerAddr), payload.length);
-      this.refreshUdpSessionIdle(body.streamId);
-      udpStream.udpSock.send(payload, port, host);
+      tunnelLog.log(`[TunnelManager] Handling UDP stream data for stream ${body.streamId}`);
+      try {
+        const payload = Buffer.from(body.payload, "base64");
+        const lastColon = udpStream.peerAddr.lastIndexOf(":");
+        const host = udpStream.peerAddr.slice(0, lastColon);
+        const port = parseInt(udpStream.peerAddr.slice(lastColon + 1), 10);
+        this.addTrafficOut(udpStream.tunnelId, payload.length);
+        this.addIpTrafficOut(udpStream.tunnelId, this.parsePeerIp(udpStream.peerAddr), payload.length);
+        this.refreshUdpSessionIdle(body.streamId);
+        udpStream.udpSock.send(payload, port, host);
+        tunnelLog.log(`[TunnelManager] UDP data sent successfully for stream ${body.streamId}`);
+      } catch (err) {
+        tunnelLog.error(`[TunnelManager] Error writing UDP data for stream ${body.streamId}:`, err);
+        this.closeUdpStream(body.streamId, "write_failed", false);
+      }
+    } else if (udpStream && udpStream.agentId !== agentId) {
+      tunnelLog.warn(`[TunnelManager] Stream ${body.streamId} not owned by agent ${agentId}`);
+    } else if (!udpStream) {
+      tunnelLog.warn(`[TunnelManager] No UDP stream found for stream ID ${body.streamId}`);
     }
   }
 
@@ -731,12 +764,17 @@ export class TunnelManager {
   }
 
   closeAgentStreams(agentId: string): void {
+    tunnelLog.log(`[TunnelManager] closeAgentStreams called for agent ${agentId}`);
+    let tcpCount = 0;
     for (const [streamId, stream] of this.tcpStreams) {
       if (stream.agentId !== agentId) continue;
+      tunnelLog.log(`[TunnelManager] Closing TCP stream ${streamId} for agent ${agentId}`);
       this.tcpStreams.delete(streamId);
       this.agentManager.decActiveConnections(agentId);
       stream.clientSocket.destroy();
+      tcpCount++;
     }
+    tunnelLog.log(`[TunnelManager] Closed ${tcpCount} TCP streams for agent ${agentId}`);
 
     const udpToClose: string[] = [];
     for (const [streamId, stream] of this.udpStreams) {
@@ -745,6 +783,12 @@ export class TunnelManager {
     for (const streamId of udpToClose) {
       this.closeUdpStream(streamId, "agent_disconnected", false);
     }
+    tunnelLog.log(`[TunnelManager] Closed ${udpToClose.length} UDP streams for agent ${agentId}`);
+    
+    // Log remaining streams after cleanup
+    const remainingTcp = this.tcpStreams.size;
+    const remainingUdp = this.udpStreams.size;
+    tunnelLog.log(`[TunnelManager] Remaining streams after cleanup - TCP: ${remainingTcp}, UDP: ${remainingUdp}`);
   }
 
   clearTrafficData(): void {

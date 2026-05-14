@@ -251,6 +251,7 @@ export class Server {
     });
 
     let lastPingTimestamp = 0;
+    let heartbeatWriteFailed = false;
 
     // Send a keepalive heartbeat every 0.5 seconds for faster liveness/latency updates.
     const heartbeatInterval = setInterval(() => {
@@ -260,7 +261,19 @@ export class Server {
       }
       try {
         lastPingTimestamp = Date.now();
-        socket.write(encodeFrame(MsgType.Heartbeat, { timestamp: lastPingTimestamp }));
+        const wrote = socket.write(encodeFrame(MsgType.Heartbeat, { timestamp: lastPingTimestamp }));
+        if (!wrote) {
+          if (!heartbeatWriteFailed) {
+            tunnelLog.warn(`[Server] Heartbeat write failed for agent ${agentId} - control socket buffer full!`);
+            heartbeatWriteFailed = true;
+          }
+          socket.once("drain", () => {
+            tunnelLog.log(`[Server] Heartbeat write buffer drained for agent ${agentId}`);
+            heartbeatWriteFailed = false;
+          });
+        } else {
+          heartbeatWriteFailed = false;
+        }
       } catch {
         clearInterval(heartbeatInterval);
       }
