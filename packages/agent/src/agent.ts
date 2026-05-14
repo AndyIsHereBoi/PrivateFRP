@@ -1,6 +1,7 @@
-import tls from "tls";
+﻿import tls from "tls";
 import net from "net";
 import dgram from "dgram";
+import { agentLog } from "./logger";
 import {
   FrameDecoder,
   encodeFrame,
@@ -127,7 +128,7 @@ export class Agent {
     this.poolEnabled = false;
     this.activePoolConnections = 0;
 
-    console.log(
+    agentLog.log(
       `[Agent] Connecting to ${this.config.serverHost}:${this.config.serverPort}...`,
     );
 
@@ -146,7 +147,7 @@ export class Agent {
 
     const decoder = new FrameDecoder();
     decoder.onError = (err) => {
-      console.error("[Agent] Frame decoder error:", err);
+      agentLog.error("[Agent] Frame decoder error:", err);
       socket.destroy();
     };
 
@@ -157,7 +158,7 @@ export class Agent {
         socket.destroy();
         return;
       }
-      console.log("[Agent] TLS connected");
+      agentLog.log("[Agent] TLS connected");
       socket.write(
         encodeFrame(MsgType.AgentHello, {
           agentId: this.config.agentId,
@@ -171,7 +172,7 @@ export class Agent {
     let authenticated = false;
     const authTimeout = setTimeout(() => {
       if (authenticated || !this.isActiveControlSocket(socket, generation)) return;
-      console.warn("[Agent] Control auth timed out; forcing reconnect");
+      agentLog.warn("[Agent] Control auth timed out; forcing reconnect");
       socket.destroy();
     }, CONTROL_AUTH_TIMEOUT_MS);
 
@@ -194,15 +195,15 @@ export class Agent {
           const body = frame.body as ServerHelloBody;
           clearTimeout(authTimeout);
           if (!body.ok) {
-            console.error("[Agent] Server rejected auth:", body.message);
+            agentLog.error("[Agent] Server rejected auth:", body.message);
             this.authRejected = true;
             cleanupAttempt();
             this.stop();
-            console.error("[Agent] Reconnect disabled after unauthorized/auth-failed response");
+            agentLog.error("[Agent] Reconnect disabled after unauthorized/auth-failed response");
             socket.destroy();
             return;
           }
-          console.log("[Agent] Authenticated:", body.message);
+          agentLog.log("[Agent] Authenticated:", body.message);
           authenticated = true;
           socket.setTimeout(CONTROL_HEARTBEAT_TIMEOUT_MS);
           this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
@@ -215,7 +216,7 @@ export class Agent {
 
         case MsgType.ConfigPush: {
           const body = frame.body as ConfigPushBody;
-          console.log(`[Agent] Config pushed: ${body.tunnels.length} tunnel(s)`);
+          agentLog.log(`[Agent] Config pushed: ${body.tunnels.length} tunnel(s)`);
           this.tunnels = body.tunnels;
           break;
         }
@@ -266,7 +267,7 @@ export class Agent {
         }
 
         default:
-          console.warn(`[Agent] Unknown frame type: 0x${frame.msgType.toString(16)}`);
+          agentLog.warn(`[Agent] Unknown frame type: 0x${frame.msgType.toString(16)}`);
       }
     };
 
@@ -275,7 +276,7 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
-      console.warn("[Agent] Control socket closed");
+      agentLog.warn("[Agent] Control socket closed");
       this.handleControlDisconnect("control channel closed");
     });
 
@@ -284,7 +285,7 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
-      console.error("[Agent] Control socket error:", err.message);
+      agentLog.error("[Agent] Control socket error:", err.message);
       this.handleControlDisconnect("control socket error");
     });
 
@@ -293,7 +294,7 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
-      console.warn("[Agent] Control socket ended by server");
+      agentLog.warn("[Agent] Control socket ended by server");
       this.handleControlDisconnect("control socket ended");
     });
 
@@ -302,7 +303,7 @@ export class Agent {
       if (!this.isActiveControlSocket(socket, generation)) {
         return;
       }
-      console.warn("[Agent] Control socket inactivity timeout; resetting all server connections");
+      agentLog.warn("[Agent] Control socket inactivity timeout; resetting all server connections");
       this.handleControlDisconnect("control socket timeout");
     });
   }
@@ -345,7 +346,7 @@ export class Agent {
     if (this.reconnectTimer) return;
 
     const delay = this.reconnectDelay;
-    console.log(`[Agent] ${reason}. Reconnecting in ${delay}ms...`);
+    agentLog.log(`[Agent] ${reason}. Reconnecting in ${delay}ms...`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
@@ -542,7 +543,7 @@ export class Agent {
     }
   }
 
-  // ─── Warm connection pool ───────────────────────────────────────────────────
+  // â”€â”€â”€ Warm connection pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /**
    * Ensure we always have POOL_SIZE pre-warmed connections in the server's
@@ -593,7 +594,7 @@ export class Agent {
     conn.on("close", release);
 
     conn.on("error", (err) => {
-      console.error("[Agent] Pool connection error:", err.message);
+      agentLog.error("[Agent] Pool connection error:", err.message);
       // 'close' will fire after 'error' and call release()
     });
 
@@ -606,7 +607,7 @@ export class Agent {
       // Wait for a single DialAssign frame telling us which tunnel to serve
       const decoder = new FrameDecoder();
       decoder.onError = (err) => {
-        console.error("[Agent] Pool connection decoder error:", err);
+        agentLog.error("[Agent] Pool connection decoder error:", err);
         conn.destroy();
       };
 
@@ -615,7 +616,7 @@ export class Agent {
 
       decoder.onFrame = (frame) => {
         if (frame.msgType !== MsgType.DialAssign) {
-          console.warn(
+          agentLog.warn(
             `[Agent] Pool connection: unexpected frame 0x${frame.msgType.toString(16)}`,
           );
           conn.destroy();
@@ -627,13 +628,13 @@ export class Agent {
         // Switch from framed mode to raw pipe mode
         const leftover = decoder.detach();
         conn.removeListener("data", onData);
-        // Pause immediately — removing the listener does NOT stop the stream
+        // Pause immediately â€” removing the listener does NOT stop the stream
         // from flowing. Any bytes arriving before pipe() is called would be
         // silently dropped if we don't pause here.
         conn.pause();
         if (leftover.length > 0) conn.unshift(leftover);
 
-        // Remove the 'close' release listener — we own this socket now
+        // Remove the 'close' release listener â€” we own this socket now
         conn.removeListener("close", release);
         released = true;
         // Replenish the pool immediately so the next request has a warm socket
@@ -642,12 +643,12 @@ export class Agent {
 
         const tunnel = this.findTunnel(body.tunnelId);
         if (!tunnel) {
-          console.warn(`[Agent] DialAssign: unknown tunnel ${body.tunnelId}`);
+          agentLog.warn(`[Agent] DialAssign: unknown tunnel ${body.tunnelId}`);
           conn.destroy();
           return;
         }
 
-        console.log(
+        agentLog.log(
           `[Agent] DialAssign requestId=${body.requestId} -> ${tunnel.targetHost}:${tunnel.targetPort}`,
         );
 
@@ -659,7 +660,7 @@ export class Agent {
   /**
    * Connect to the local target service and join the two sockets into a
    * bidirectional pipe.  Used by both the pool path (DialAssign) and the
-   * on-demand fallback path (DialTcp → DataConnHello).
+   * on-demand fallback path (DialTcp â†’ DataConnHello).
    */
   private connectToTarget(
     dataConn: tls.TLSSocket | net.Socket,
@@ -673,7 +674,7 @@ export class Agent {
       target.setNoDelay(true);
       dataConn.setNoDelay(true);
 
-      // Transparent byte-for-byte pipe — pipes are established first so the
+      // Transparent byte-for-byte pipe â€” pipes are established first so the
       // streams stay in paused/controlled mode until both sides are ready.
       dataConn.pipe(target);
       target.pipe(dataConn);
@@ -685,23 +686,23 @@ export class Agent {
     });
 
     target.on("error", (err) => {
-      console.error(
+      agentLog.error(
         `[Agent] Target connection error (requestId=${requestId}): ${err.message}`,
       );
       dataConn.destroy();
     });
   }
 
-  // ─── On-demand TCP dial (slow-path fallback) ────────────────────────────────
+  // â”€â”€â”€ On-demand TCP dial (slow-path fallback) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private handleDialTcp(body: DialTcpBody): void {
     const tunnel = this.findTunnel(body.tunnelId);
     if (!tunnel) {
-      console.warn(`[Agent] DialTcp: unknown tunnel ${body.tunnelId}`);
+      agentLog.warn(`[Agent] DialTcp: unknown tunnel ${body.tunnelId}`);
       return;
     }
 
-    console.log(
+    agentLog.log(
       `[Agent] DialTcp (fallback) requestId=${body.requestId} -> ${tunnel.targetHost}:${tunnel.targetPort}`,
     );
 
@@ -729,20 +730,20 @@ export class Agent {
     });
 
     dataConn.on("error", (err) => {
-      console.error(`[Agent] Fallback data connection error (requestId=${body.requestId}): ${err.message}`);
+      agentLog.error(`[Agent] Fallback data connection error (requestId=${body.requestId}): ${err.message}`);
     });
   }
 
-  // ─── UDP session handling ───────────────────────────────────────────────────
+  // â”€â”€â”€ UDP session handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private handleDialUdpSession(body: DialUdpSessionBody): void {
     const tunnel = this.findTunnel(body.tunnelId);
     if (!tunnel) {
-      console.warn(`[Agent] DialUdpSession: unknown tunnel ${body.tunnelId}`);
+      agentLog.warn(`[Agent] DialUdpSession: unknown tunnel ${body.tunnelId}`);
       return;
     }
 
-    console.log(
+    agentLog.log(
       `[Agent] DialUdpSession requestId=${body.requestId} peer=${body.peerAddr} -> ${tunnel.targetHost}:${tunnel.targetPort}`,
     );
 
@@ -778,7 +779,7 @@ export class Agent {
         };
 
         decoder.onError = (err) => {
-          console.error("[Agent] UDP session decoder error:", err);
+          agentLog.error("[Agent] UDP session decoder error:", err);
           dataConn.destroy();
         };
 
@@ -799,13 +800,13 @@ export class Agent {
 
         dataConn.on("close", () => udpSock.close());
         dataConn.on("error", (err) => {
-          console.error(`[Agent] UDP data conn error:`, err.message);
+          agentLog.error(`[Agent] UDP data conn error:`, err.message);
           udpSock.close();
         });
       });
 
       dataConn.on("error", (err) => {
-        console.error(
+        agentLog.error(
           `[Agent] UDP data connection error (requestId=${body.requestId}): ${err.message}`,
         );
         udpSock.close();
@@ -813,7 +814,7 @@ export class Agent {
     });
 
     udpSock.on("error", (err) => {
-      console.error("[Agent] UDP socket error:", err.message);
+      agentLog.error("[Agent] UDP socket error:", err.message);
     });
   }
 }

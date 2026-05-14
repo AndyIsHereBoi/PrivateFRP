@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { Agent } from "./agent";
-import { configureAgentLogging } from "./logger";
+import { agentLog, configureAgentLogging } from "./logger";
 
 function loadEnvFile(fileName: string): void {
   const candidates: string[] = [];
@@ -61,15 +61,15 @@ const agentSecret = process.env.AGENT_SECRET;
 const tlsRejectUnauthorized = process.env.TLS_REJECT_UNAUTHORIZED !== "false";
 
 if (!agentId || !agentSecret) {
-  console.error("[PrivateFRP Agent] AGENT_ID and AGENT_SECRET environment variables are required.");
+  agentLog.error("[PrivateFRP Agent] AGENT_ID and AGENT_SECRET environment variables are required.");
   process.exit(1);
 }
 
-console.log("[PrivateFRP Agent] Starting...");
-console.log("[PrivateFRP Agent] Build marker: reconnect-guard-v4");
-console.log(`  Server : ${serverHost}:${serverPort}`);
-console.log(`  Agent  : ${agentId}`);
-console.log(`  TLS verify: ${tlsRejectUnauthorized}`);
+agentLog.info("[PrivateFRP Agent] Starting...");
+agentLog.info("[PrivateFRP Agent] Build marker: reconnect-guard-v4");
+agentLog.info(`  Server : ${serverHost}:${serverPort}`);
+agentLog.info(`  Agent  : ${agentId}`);
+agentLog.info(`  TLS verify: ${tlsRejectUnauthorized}`);
 
 const agent = new Agent({
   serverHost,
@@ -82,7 +82,7 @@ const agent = new Agent({
 agent.start();
 
 process.on("SIGINT", () => {
-  console.log("\n[PrivateFRP Agent] Shutting down...");
+  agentLog.info("\n[PrivateFRP Agent] Shutting down...");
   agent.stop();
   process.exit(0);
 });

@@ -513,7 +513,7 @@ export class TunnelManager {
       tunnelLog.log(`[TunnelManager] Client socket closed for stream ${streamId}`);
       const wasActive = releaseStream();
       if (!wasActive) {
-        tunnelLog.warn(`[TunnelManager] Stream ${streamId} already released on client close`);
+        tunnelLog.log(`[TunnelManager] Stream ${streamId} already released (agent closed first)`);
         return;
       }
       try {
@@ -751,6 +751,7 @@ export class TunnelManager {
   handleAgentStreamClose(agentId: string, body: StreamCloseBody): void {
     const tcpStream = this.tcpStreams.get(body.streamId);
     if (tcpStream && tcpStream.agentId === agentId) {
+      tunnelLog.log(`[TunnelManager] Agent sent StreamClose for stream ${body.streamId}, reason: ${body.reason ?? "unknown"}`);
       this.tcpStreams.delete(body.streamId);
       this.agentManager.decActiveConnections(agentId);
       tcpStream.clientSocket.destroy();
@@ -764,7 +765,7 @@ export class TunnelManager {
   }
 
   closeAgentStreams(agentId: string): void {
-    tunnelLog.log(`[TunnelManager] closeAgentStreams called for agent ${agentId}`);
+    tunnelLog.warn(`[TunnelManager] closeAgentStreams called for agent ${agentId} (TCP streams: ${this.tcpStreams.size}, UDP streams: ${this.udpStreams.size})`);
     let tcpCount = 0;
     for (const [streamId, stream] of this.tcpStreams) {
       if (stream.agentId !== agentId) continue;

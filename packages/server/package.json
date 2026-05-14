@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@privatefrp/shared": "workspace:*",
+    "log4js": "^6.9.1",
     "streamroller": "^3.1.5"
   }
 }

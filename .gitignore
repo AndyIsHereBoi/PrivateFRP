@@ -6,3 +6,4 @@ server.env
 agent.env
 bun.lockb
 bun.lock
+log.txt
