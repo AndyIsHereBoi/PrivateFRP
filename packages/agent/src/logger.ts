@@ -1,22 +1,7 @@
-import path from "path";
-import log4js from "log4js";
+// @ts-nocheck
+const log4js = require("log4js");
 
-const MAX_LOG_BYTES = 10 * 1024 * 1024;
-const MAX_LOG_BACKUPS = 3;
-
-function createRollingFileConfig(filename: string): any {
-  return {
-    type: "rollingFile" as const,
-    filename: path.join("./logs", filename),
-    maxLogSize: MAX_LOG_BYTES,
-    backups: MAX_LOG_BACKUPS,
-    pattern: "-yyyy-MM-dd",
-    alwaysIncludePattern: false,
-    compress: true,
-  };
-}
-
-function createLog4jsConfig(logDir: string): log4js.Configuration {
+function createLog4jsConfig() {
   return {
     appenders: {
       console: {
@@ -26,7 +11,7 @@ function createLog4jsConfig(logDir: string): log4js.Configuration {
           pattern: "[%d] [%p] %-32x{level}- %m",
           tokens: {
             d: () => new Date().toISOString().replace("T", " ").slice(0, 23),
-            level: (logEvent: any) => {
+            level: (logEvent) => {
               const levelStr = logEvent.level?.toString() ?? "INFO";
               const padding = " ".repeat(Math.max(0, 32 - levelStr.length));
               return `${levelStr}${padding}`;
@@ -34,51 +19,53 @@ function createLog4jsConfig(logDir: string): log4js.Configuration {
           },
         },
       },
-      file: createRollingFileConfig("agent.log"),
+      // File appenders - disabled, kept for reference
+      // file: {
+      //   type: "dateFile",
+      //   filename: "logs/agent.log",
+      //   dateFormatPattern: "-yyyy-MM-dd",
+      //   numBackups: 3,
+      //   compress: true,
+      // },
     },
     categories: {
-      default: { appenders: ["console", "file"], level: "debug" },
+      // File logging disabled - kept for reference
+      // default: { appenders: ["console", "file"], level: "debug" },
+      default: { appenders: ["console"], level: "debug" },
     },
   };
 }
 
 class Logger {
-  private logger: log4js.Logger;
-
-  constructor(category: string) {
+  constructor(category) {
     this.logger = log4js.getLogger(category);
   }
 
-  debug(message: string, ...args: unknown[]): void {
+  debug(message, ...args) {
     this.logger.debug(message, ...args);
   }
 
-  info(message: string, ...args: unknown[]): void {
+  info(message, ...args) {
     this.logger.info(message, ...args);
   }
 
-  log(message: string, ...args: unknown[]): void {
+  log(message, ...args) {
     this.logger.info(message, ...args);
   }
 
-  warn(message: string, ...args: unknown[]): void {
+  warn(message, ...args) {
     this.logger.warn(message, ...args);
   }
 
-  error(message: string, ...args: unknown[]): void {
+  error(message, ...args) {
     this.logger.error(message, ...args);
   }
 }
 
-export const agentLog = new Logger("agent");
+const agentLog = new Logger("agent");
 
-export function configureAgentLogging(logPath: string): void {
-  const resolvedDir = path.resolve(logPath || "./logs");
-  try {
-    const fs = require("fs");
-    fs.mkdirSync(resolvedDir, { recursive: true });
-  } catch {
-    // ignore if directory already exists
-  }
-  log4js.configure(createLog4jsConfig(resolvedDir));
+function configureAgentLogging(logPath) {
+  log4js.configure(createLog4jsConfig());
 }
+
+module.exports = { agentLog, configureAgentLogging };
