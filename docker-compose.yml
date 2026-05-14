@@ -19,7 +19,7 @@ services:
       - ./certs:/app/certs:ro    # TLS certificates
     environment:
       AGENT_PORT: ${AGENT_PORT:-7000}
-      DASHBOARD_PORT: ${DASHBOARD_PORT:-8080}
+      DASHBOARD_PORT: ${DASHBOARD_PORT:-8089}
       AGENT_TLS_CERT: /app/certs/server.crt
       AGENT_TLS_KEY: /app/certs/server.key
       DASHBOARD_SECRET: ${DASHBOARD_SECRET:-admin:changeme}
