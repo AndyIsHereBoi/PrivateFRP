@@ -74,7 +74,7 @@ export interface StreamOpenFrame {
 
 export interface StreamDataFrame {
   streamId: string;
-  data: string;
+  data: Uint8Array;
 }
 
 export interface StreamCloseFrame {
@@ -84,7 +84,7 @@ export interface StreamCloseFrame {
 
 export interface UdpDataFrame {
   sessionId: string;
-  data: string;
+  data: Uint8Array;
   peerAddress?: string;
   peerPort?: number;
 }

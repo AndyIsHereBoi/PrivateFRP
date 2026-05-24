@@ -7,8 +7,6 @@ export interface ServerRuntimeConfig {
   agentPort: number;
   dashboardPort: number;
   publicHost: string;
-  tlsCertPath: string;
-  tlsKeyPath: string;
   databasePath: string;
   dashboardUsername: string;
   dashboardPassword: string;
@@ -24,7 +22,6 @@ export interface AgentRuntimeConfig {
   agentSecret: string;
   agentName: string;
   reconnectDelayMs: number;
-  trustStorePath: string;
   dataDir: string;
   tunnels: TunnelRecord[];
 }
@@ -36,8 +33,6 @@ export function readServerRuntimeConfig(env: Record<string, string | undefined>)
     agentPort: readInt(env, 'AGENT_PORT', DEFAULTS.AGENT_PORT),
     dashboardPort: readInt(env, 'DASHBOARD_PORT', DEFAULTS.DASHBOARD_PORT),
     publicHost: readString(env, 'PUBLIC_HOST', '0.0.0.0'),
-    tlsCertPath: readString(env, 'AGENT_TLS_CERT_PATH', 'certs/agent-server-cert.pem'),
-    tlsKeyPath: readString(env, 'AGENT_TLS_KEY_PATH', 'certs/agent-server-key.pem'),
     databasePath: readString(env, 'DATABASE_PATH', `${dataDir}/privatefrp.sqlite`),
     dashboardUsername: readString(env, 'DASHBOARD_USERNAME', 'admin'),
     dashboardPassword: readString(env, 'DASHBOARD_PASSWORD', 'admin'),
@@ -56,7 +51,6 @@ export function readAgentRuntimeConfig(env: Record<string, string | undefined>):
     agentSecret: readString(env, 'AGENT_SECRET', ''),
     agentName: readString(env, 'AGENT_NAME', 'privatefrp-agent'),
     reconnectDelayMs: readInt(env, 'AGENT_RECONNECT_MS', DEFAULTS.AGENT_RECONNECT_MS),
-    trustStorePath: readString(env, 'TRUST_STORE_PATH', `${dataDir}/trusted-server-cert.json`),
     dataDir,
     tunnels: readJson<TunnelRecord[]>(env, 'TUNNELS', [])
   };

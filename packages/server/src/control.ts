@@ -1,7 +1,7 @@
 import dgram from 'node:dgram';
 import { connect, type Socket } from 'bun';
 import { DEFAULTS, FRAME_TYPES, type AgentConfig, type AgentRecord, type DialTcpFrame, type DialUdpSessionFrame, type Frame, type StreamCloseFrame, type StreamDataFrame, type TunnelRecord } from '@privatefrp/shared';
-import { decodeData, encodeData, encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
+import { encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
 import type { ServerRuntimeConfig } from '@privatefrp/shared';
 import type { ServerStore } from './store';
 
@@ -67,8 +67,6 @@ export class ControlPlane {
   private readonly tcpListeners = new Map<string, any>();
   private readonly udpListeners = new Map<string, any>();
   private agentListener: any = null;
-  private agentTlsCert = '';
-  private agentTlsKey = '';
   private lastBackpressureLogAt = 0;
 
   constructor(
@@ -79,15 +77,9 @@ export class ControlPlane {
   ) {}
 
   async start(): Promise<void> {
-    this.agentTlsCert = await Bun.file(this.config.tlsCertPath).text();
-    this.agentTlsKey = await Bun.file(this.config.tlsKeyPath).text();
     this.agentListener = Bun.listen({
       hostname: this.config.host,
       port: this.config.agentPort,
-      tls: {
-        cert: this.agentTlsCert,
-        key: this.agentTlsKey
-      },
       socket: {
         open: (socket: Socket) => this.onAgentSocketOpen(socket),
         data: (socket: Socket, data: unknown) => this.onAgentSocketData(socket, data),
@@ -615,12 +607,6 @@ export class ControlPlane {
         state.open = true;
         return;
       }
-      case FRAME_TYPES.STREAM_DATA: {
-        const payload = frame.payload as { streamId?: string; data?: string } | undefined;
-        if (!payload?.streamId || typeof payload.data !== 'string') return;
-        this.handleAgentStreamData(payload.streamId, decodeData(payload.data));
-        return;
-      }
       case FRAME_TYPES.STREAM_CLOSE: {
         const payload = frame.payload as { streamId?: string } | undefined;
         if (!payload?.streamId) return;
@@ -628,12 +614,6 @@ export class ControlPlane {
         if (!state) return;
         state.socket.end?.();
         this.tcpStreams.delete(payload.streamId);
-        return;
-      }
-      case FRAME_TYPES.UDP_DATA: {
-        const payload = frame.payload as { sessionId?: string; data?: string } | undefined;
-        if (!payload?.sessionId || typeof payload.data !== 'string') return;
-        this.handleAgentUdpData(payload.sessionId, decodeData(payload.data));
         return;
       }
       default:

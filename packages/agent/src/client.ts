@@ -1,9 +1,7 @@
 import dgram from 'node:dgram';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { connect, type Socket } from 'bun';
 import { FRAME_TYPES, type AgentRuntimeConfig, type DialTcpFrame, type DialUdpSessionFrame, type TunnelRecord } from '@privatefrp/shared';
-import { decodeData, encodeData, encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
+import { encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
 
 type LocalTcpStream = {
   streamId: string;
@@ -16,14 +14,6 @@ type LocalUdpSession = {
   socket: any;
   targetHost: string;
   targetPort: number;
-};
-
-type TrustedServerCertificate = {
-  fingerprint256: string;
-  subject?: string;
-  issuer?: string;
-  validFrom?: string;
-  validTo?: string;
 };
 
 function asUint8Array(value: unknown): Uint8Array {
@@ -111,7 +101,6 @@ export class AgentClient {
       const socket = connect({
         hostname: this.config.serverHost,
         port: this.config.serverPort,
-        tls: { rejectUnauthorized: false } as any,
         socket: {
           open: (s: Socket) => {
             void this.handleSocketOpen(s).then(() => {
@@ -166,53 +155,7 @@ export class AgentClient {
   }
 
   private async handleSocketOpen(socket: Socket): Promise<void> {
-    await this.verifyServerCertificate(socket);
     socket.setNoDelay(true);
-  }
-
-  private async verifyServerCertificate(socket: Socket): Promise<void> {
-    const peerCertificate = socket.getPeerX509Certificate?.();
-    if (!peerCertificate) {
-      throw new Error('TLS server certificate is not available');
-    }
-
-    const fingerprint256 = String((peerCertificate as { fingerprint256?: string }).fingerprint256 || '').trim();
-    if (!fingerprint256) {
-      throw new Error('TLS server certificate fingerprint is missing');
-    }
-
-    const trusted = await this.readTrustedServerCertificate();
-    if (!trusted) {
-      await this.storeTrustedServerCertificate({
-        fingerprint256,
-        subject: String((peerCertificate as { subject?: string }).subject || ''),
-        issuer: String((peerCertificate as { issuer?: string }).issuer || ''),
-        validFrom: String((peerCertificate as { validFrom?: string }).validFrom || ''),
-        validTo: String((peerCertificate as { validTo?: string }).validTo || '')
-      });
-      return;
-    }
-
-    if (trusted.fingerprint256 !== fingerprint256) {
-      throw new Error('Trusted server certificate fingerprint mismatch');
-    }
-  }
-
-  private async readTrustedServerCertificate(): Promise<TrustedServerCertificate | null> {
-    try {
-      await access(this.config.trustStorePath);
-      const text = await readFile(this.config.trustStorePath, 'utf8');
-      if (!text.trim()) return null;
-      const parsed = JSON.parse(text) as TrustedServerCertificate;
-      return typeof parsed?.fingerprint256 === 'string' ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async storeTrustedServerCertificate(record: TrustedServerCertificate): Promise<void> {
-    await mkdir(dirname(this.config.trustStorePath), { recursive: true });
-    await writeFile(this.config.trustStorePath, JSON.stringify(record, null, 2), 'utf8');
   }
 
   private sendHello(): void {
@@ -348,12 +291,6 @@ export class AgentClient {
         this.openLocalUdpSession(payload);
         return;
       }
-      case FRAME_TYPES.STREAM_DATA: {
-        const payload = frame.payload as { streamId?: string; data?: string } | undefined;
-        if (!payload?.streamId || typeof payload.data !== 'string') return;
-        this.handleStreamData(payload.streamId, decodeData(payload.data));
-        return;
-      }
       case FRAME_TYPES.STREAM_CLOSE: {
         const payload = frame.payload as { streamId?: string } | undefined;
         if (!payload?.streamId) return;
@@ -361,12 +298,6 @@ export class AgentClient {
         stream?.socket.close?.();
         this.tcpStreams.delete(payload.streamId);
         console.log(`[agent] stream close ${payload.streamId}`);
-        return;
-      }
-      case FRAME_TYPES.UDP_DATA: {
-        const payload = frame.payload as { sessionId?: string; data?: string } | undefined;
-        if (!payload?.sessionId || typeof payload.data !== 'string') return;
-        this.handleUdpData(payload.sessionId, decodeData(payload.data));
         return;
       }
       default:
