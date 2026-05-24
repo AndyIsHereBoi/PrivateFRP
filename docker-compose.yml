@@ -5,13 +5,14 @@ services:
       dockerfile: Dockerfile.server
     container_name: privatefrp-server
     restart: unless-stopped
-    ports:
-      - "7000:7000"
-      - "8089:8089"
+    network_mode: "host"
     environment:
       - SERVER_PORT=7000
       - DASHBOARD_PORT=8089
       - LOG_LEVEL=info
+      - DATABASE_PATH=./data/privatefrp.db
+      - TLS_CERT=
+      - TLS_KEY=
     volumes:
       - ./data:/app/data
 
@@ -21,8 +22,9 @@ services:
       dockerfile: Dockerfile.agent
     container_name: privatefrp-agent
     restart: unless-stopped
+    network_mode: "host"
     environment:
-      - SERVER_HOST=privatefrp-server
+      - SERVER_HOST=localhost
       - SERVER_PORT=7000
       - AGENT_ID=agent-1
       - AGENT_SECRET=your-secret-here

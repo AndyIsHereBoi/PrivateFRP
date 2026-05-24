@@ -57,8 +57,8 @@ export class DashboardServer {
           }
         });
 
-        this.server.listen(this.port, () => {
-          console.log(`Dashboard server listening on port ${this.port}`);
+        this.server.listen(this.port, "0.0.0.0", () => {
+          console.log(`Dashboard server listening on 0.0.0.0:${this.port}`);
           resolve();
         });
 

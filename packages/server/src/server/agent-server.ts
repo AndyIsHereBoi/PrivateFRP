@@ -1,6 +1,3 @@
-import { createServer } from "bun:tls";
-import type { TLSSocket } from "bun:tls";
-
 /**
  * AgentServer handles connections from PrivateFRP agents
  */
@@ -24,20 +21,29 @@ export class AgentServer {
     const paths = getDefaultCertPaths();
     const { cert, key } = await loadOrCreateCertificate(paths.cert, paths.key);
 
-    this.server = createServer({ cert, key }, (socket) => {
-      this.handleAgentConnection(socket);
+    const server = this;
+    this.server = Bun.listen({
+      hostname: "0.0.0.0",
+      port: this.port,
+      tls: {
+        key: Bun.file(key),
+        cert: Bun.file(cert)
+      },
+      socket: {
+        open(socket) {
+          console.log(`New agent connection from ${socket.remoteAddress}:${socket.remotePort}`);
+          const connection = new AgentConnection(socket.remoteAddress || "unknown", socket);
+          server.agents.set(connection.id, connection);
+
+          socket.close = () => {
+            console.log(`Agent disconnected: ${connection.id}`);
+            server.agents.delete(connection.id);
+          };
+        }
+      }
     });
 
-    return new Promise((resolve, reject) => {
-      this.server.listen(this.port, () => {
-        console.log(`Agent server listening on port ${this.port}`);
-        resolve();
-      });
-      this.server.onerror = (err: Error) => {
-        console.error(`Agent server error: ${err.message}`);
-        reject(err);
-      };
-    });
+    console.log(`Agent server listening on 0.0.0.0:${this.port}`);
   }
 
   /**
@@ -45,29 +51,10 @@ export class AgentServer {
    */
   async stop(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server.close((err?: Error) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
+      this.server.close(() => {
+        resolve();
       });
     });
-  }
-
-  /**
-   * Handle a new agent connection
-   */
-  private handleAgentConnection(socket: TLSSocket): void {
-    console.log(`New agent connection from ${socket.remoteAddress}:${socket.remotePort}`);
-
-    const connection = new AgentConnection(socket.remoteAddress || "unknown", socket);
-    this.agents.set(connection.id, connection);
-
-    socket.onclose = () => {
-      console.log(`Agent disconnected: ${connection.id}`);
-      this.agents.delete(connection.id);
-    };
   }
 }
 
@@ -76,9 +63,9 @@ export class AgentServer {
  */
 export class AgentConnection {
   public id: string;
-  private socket: TLSSocket;
+  private socket: any;
 
-  constructor(id: string, socket: TLSSocket) {
+  constructor(id: string, socket: any) {
     this.id = id;
     this.socket = socket;
   }

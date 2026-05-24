@@ -59,8 +59,8 @@ export class WebSocketServer {
           }
         });
 
-        this.server.listen(this.port, () => {
-          console.log(`WebSocket server listening on port ${this.port}`);
+        this.server.listen(this.port, "0.0.0.0", () => {
+          console.log(`WebSocket server listening on 0.0.0.0:${this.port}`);
           resolve();
         });
 

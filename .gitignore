@@ -25,6 +25,8 @@ data/
 
 # OS
 .DS_Store
-Thumbs.db
+Thumbs.dba
 
 temp
+
+test-data
