@@ -1,0 +1,10 @@
+services:
+  server:
+    image: ghcr.io/andyishereboi/privatefrp-server:latest
+    network_mode: host
+    environment:
+      - SERVER_PORT=${SERVER_PORT:-7000}
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-8089}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - ./data:/app/data
