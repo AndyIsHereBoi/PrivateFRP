@@ -25,6 +25,7 @@ export interface AgentRuntimeConfig {
   agentName: string;
   reconnectDelayMs: number;
   trustStorePath: string;
+  dataDir: string;
   tunnels: TunnelRecord[];
 }
 
@@ -56,6 +57,7 @@ export function readAgentRuntimeConfig(env: Record<string, string | undefined>):
     agentName: readString(env, 'AGENT_NAME', 'privatefrp-agent'),
     reconnectDelayMs: readInt(env, 'AGENT_RECONNECT_MS', DEFAULTS.AGENT_RECONNECT_MS),
     trustStorePath: readString(env, 'TRUST_STORE_PATH', `${dataDir}/trusted-server-cert.json`),
+    dataDir,
     tunnels: readJson<TunnelRecord[]>(env, 'TUNNELS', [])
   };
 }
