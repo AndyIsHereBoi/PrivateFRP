@@ -34,15 +34,19 @@ function asUint8Array(value: unknown): Uint8Array {
   return new Uint8Array(0);
 }
 
-function writeSocket(socket: any, data: Uint8Array): void {
+function writeSocket(socket: any, data: Uint8Array): number {
   if (typeof socket.write === 'function') {
-    socket.write(data);
-    return;
+    return socket.write(data);
   }
   if (typeof socket.send === 'function') {
-    socket.send(data);
+    const result = socket.send(data);
+    return typeof result === 'number' ? result : data.byteLength;
   }
+  return -1;
 }
+
+const MAX_SERVER_QUEUE_BYTES = 512 * 1024;
+const BACKPRESSURE_LOG_MS = 2000;
 
 export class AgentClient {
   private socket: Socket | null = null;
@@ -52,6 +56,10 @@ export class AgentClient {
   private readonly udpSessions = new Map<string, LocalUdpSession>();
   private tunnels = new Map<string, TunnelRecord>();
   private stopping = false;
+  private pendingWrites: Uint8Array[] = [];
+  private pendingBytes = 0;
+  private lastBackpressureLogAt = 0;
+  private pausedSockets = new Set<Socket>();
 
   constructor(private readonly config: AgentRuntimeConfig) {}
 
@@ -63,6 +71,9 @@ export class AgentClient {
     this.stopping = true;
     this.stopHeartbeat();
     this.cleanupAllStreams();
+    this.pendingWrites = [];
+    this.pendingBytes = 0;
+    this.pausedSockets.clear();
     try {
       this.socket?.close?.();
     } catch {
@@ -108,6 +119,7 @@ export class AgentClient {
               this.parser = new FrameParser();
               this.sendHello();
               this.startHeartbeat();
+              console.log('[agent] connected');
             }).catch(error => {
               rejectOnce(error);
               try {
@@ -126,7 +138,11 @@ export class AgentClient {
             this.stopHeartbeat();
             this.cleanupAllStreams();
             this.socket = null;
+            console.log('[agent] disconnected');
             resolveOnce();
+          },
+          drain: () => {
+            this.flushPendingWrites();
           },
           error: (_s: Socket, error: Error) => {
             this.stopHeartbeat();
@@ -217,9 +233,71 @@ export class AgentClient {
     }
   }
 
-  private send(frame: Parameters<typeof encodeFrame>[0]): void {
+  private send(frame: Parameters<typeof encodeFrame>[0]): boolean {
+    if (!this.socket) return false;
+    return this.writeToServer(encodeFrame(frame));
+  }
+
+  private writeToServer(data: Uint8Array): boolean {
+    if (!this.socket) return false;
+    if (this.pendingBytes > 0) {
+      this.queueServerBytes(data);
+      return this.backpressureStatus();
+    }
+
+    const written = writeSocket(this.socket, data);
+    if (written < 0) return false;
+    if (written < data.byteLength) {
+      this.queueServerBytes(data.subarray(written));
+      return this.backpressureStatus();
+    }
+
+    return true;
+  }
+
+  private queueServerBytes(data: Uint8Array): void {
+    if (data.byteLength <= 0) return;
+    this.pendingWrites.push(data);
+    this.pendingBytes += data.byteLength;
+  }
+
+  private flushPendingWrites(): void {
     if (!this.socket) return;
-    writeSocket(this.socket, encodeFrame(frame));
+    while (this.pendingWrites.length > 0) {
+      const chunk = this.pendingWrites[0];
+      if (!chunk) break;
+      const written = writeSocket(this.socket, chunk);
+      if (written < 0) return;
+      if (written < chunk.byteLength) {
+        this.pendingWrites[0] = chunk.subarray(written);
+        this.pendingBytes -= written;
+        return;
+      }
+      this.pendingWrites.shift();
+      this.pendingBytes -= chunk.byteLength;
+    }
+
+    if (this.pendingBytes === 0 && this.pausedSockets.size > 0) {
+      for (const sock of this.pausedSockets) {
+        try {
+          sock.resume?.();
+        } catch {
+          // ignore
+        }
+      }
+      this.pausedSockets.clear();
+    }
+  }
+
+  private backpressureStatus(): boolean {
+    if (this.pendingBytes > MAX_SERVER_QUEUE_BYTES) {
+      const now = nowMs();
+      if (now - this.lastBackpressureLogAt > BACKPRESSURE_LOG_MS) {
+        this.lastBackpressureLogAt = now;
+        console.warn(`[agent] backpressure queue=${this.pendingBytes}`);
+      }
+    }
+    return this.pendingBytes === 0;
   }
 
   private async handleFrame(frame: { type: string; payload?: unknown; streamId?: string }): Promise<void> {
@@ -230,17 +308,20 @@ export class AgentClient {
         const payload = frame.payload as { tunnels?: TunnelRecord[] } | undefined;
         this.tunnels = new Map((payload?.tunnels || []).map(tunnel => [tunnel.id, tunnel]));
         this.send({ type: FRAME_TYPES.CONFIG_ACK, payload: { receivedAt: nowMs() } });
+        console.log(`[agent] config push (${this.tunnels.size} tunnels)`);
         return;
       }
       case FRAME_TYPES.DIAL_TCP: {
         const payload = frame.payload as DialTcpFrame | undefined;
         if (!payload?.streamId) return;
+        console.log(`[agent] dial tcp ${payload.streamId} -> ${payload.tunnelId}`);
         await this.openLocalTcpStream(payload);
         return;
       }
       case FRAME_TYPES.DIAL_UDP_SESSION: {
         const payload = frame.payload as DialUdpSessionFrame | undefined;
         if (!payload?.sessionId) return;
+        console.log(`[agent] dial udp ${payload.sessionId} -> ${payload.tunnelId}`);
         this.openLocalUdpSession(payload);
         return;
       }
@@ -258,6 +339,7 @@ export class AgentClient {
         const stream = this.tcpStreams.get(payload.streamId);
         stream?.socket.close?.();
         this.tcpStreams.delete(payload.streamId);
+        console.log(`[agent] stream close ${payload.streamId}`);
         return;
       }
       case FRAME_TYPES.UDP_DATA: {
@@ -288,9 +370,17 @@ export class AgentClient {
           this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
           this.send({ type: FRAME_TYPES.STREAM_OPEN, streamId: payload.streamId, payload: { streamId: payload.streamId } });
         },
-        data: (_localSocket: Socket, data: unknown) => {
+        data: (localSocket: Socket, data: unknown) => {
           const bytes = asUint8Array(data);
-          this.send({ type: FRAME_TYPES.STREAM_DATA, streamId: payload.streamId, payload: { streamId: payload.streamId, data: encodeData(bytes) } });
+          const ok = this.send({ type: FRAME_TYPES.STREAM_DATA, streamId: payload.streamId, payload: { streamId: payload.streamId, data: encodeData(bytes) } });
+          if (!ok) {
+            try {
+              localSocket.pause?.();
+            } catch {
+              // ignore
+            }
+            this.pausedSockets.add(localSocket);
+          }
         },
         close: () => {
           this.send({ type: FRAME_TYPES.STREAM_CLOSE, streamId: payload.streamId, payload: { streamId: payload.streamId, reason: 'local closed' } });

@@ -11,7 +11,7 @@ type TcpClientState = {
   agentId: string;
   socket: any;
   open: boolean;
-  queued: Uint8Array[];
+  paused: boolean;
 };
 
 type UdpSessionState = {
@@ -34,7 +34,12 @@ type AgentConnectionState = {
   connectedAt: number;
   lastHeartbeat: number;
   lastLatency: number | null;
+  pendingWrites: Uint8Array[];
+  pendingBytes: number;
 };
+
+const MAX_AGENT_QUEUE_BYTES = 512 * 1024;
+const BACKPRESSURE_LOG_MS = 2000;
 
 function asUint8Array(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
@@ -44,14 +49,15 @@ function asUint8Array(value: unknown): Uint8Array {
   return new Uint8Array(0);
 }
 
-function writeSocket(socket: any, data: Uint8Array): void {
+function writeSocket(socket: any, data: Uint8Array): number {
   if (typeof socket.write === 'function') {
-    socket.write(data);
-    return;
+    return socket.write(data);
   }
   if (typeof socket.send === 'function') {
-    socket.send(data);
+    const result = socket.send(data);
+    return typeof result === 'number' ? result : data.byteLength;
   }
+  return -1;
 }
 
 export class ControlPlane {
@@ -63,6 +69,7 @@ export class ControlPlane {
   private agentListener: any = null;
   private agentTlsCert = '';
   private agentTlsKey = '';
+  private lastBackpressureLogAt = 0;
 
   constructor(
     private readonly config: ServerRuntimeConfig,
@@ -85,6 +92,7 @@ export class ControlPlane {
         open: (socket: Socket) => this.onAgentSocketOpen(socket),
         data: (socket: Socket, data: unknown) => this.onAgentSocketData(socket, data),
         close: (socket: Socket) => this.onAgentSocketClose(socket),
+        drain: (socket: Socket) => this.onAgentSocketDrain(socket),
         error: (_socket: Socket, error: Error) => {
           console.error('[agent] socket error', error);
         }
@@ -208,15 +216,45 @@ export class ControlPlane {
 
     for (const [tunnelId, listener] of this.tcpListeners) {
       if (!activeIds.has(tunnelId)) {
-        listener.close?.();
+        listener.stop?.(true);
         this.tcpListeners.delete(tunnelId);
+        this.closeTunnelSessions(tunnelId, 'tunnel disabled');
       }
     }
     for (const [tunnelId, listener] of this.udpListeners) {
       if (!activeIds.has(tunnelId)) {
         listener.close();
         this.udpListeners.delete(tunnelId);
+        this.closeTunnelSessions(tunnelId, 'tunnel disabled');
       }
+    }
+  }
+
+  private closeTunnelSessions(tunnelId: string, reason: string): void {
+    for (const [streamId, stream] of this.tcpStreams) {
+      if (stream.tunnelId !== tunnelId) continue;
+      const agent = this.agentConnections.get(stream.agentId);
+      agent && this.writeToAgent(agent, encodeFrame({
+        type: FRAME_TYPES.STREAM_CLOSE,
+        streamId,
+        payload: { streamId, reason } satisfies StreamCloseFrame
+      }));
+      try {
+        stream.socket.end?.();
+      } catch {
+        // ignore
+      }
+      this.tcpStreams.delete(streamId);
+    }
+
+    for (const [sessionId, session] of this.udpSessions) {
+      if (session.tunnelId !== tunnelId) continue;
+      try {
+        session.socket.close();
+      } catch {
+        // ignore
+      }
+      this.udpSessions.delete(sessionId);
     }
   }
 
@@ -263,7 +301,7 @@ export class ControlPlane {
         });
         const agent = tunnel.agentId ? this.agentConnections.get(tunnel.agentId) : null;
         if (agent) {
-          writeSocket(agent.socket, encodeFrame({
+          this.writeToAgent(agent, encodeFrame({
             type: FRAME_TYPES.DIAL_UDP_SESSION,
             streamId: sessionId,
             payload: {
@@ -295,18 +333,18 @@ export class ControlPlane {
     }
 
     const streamId = `${tunnel.id}:${nowMs()}:${Math.random().toString(36).slice(2, 10)}`;
-    const state: TcpClientState = {
+        const state: TcpClientState = {
       streamId,
       tunnelId: tunnel.id,
       agentId,
       socket,
-      open: false,
-      queued: []
+          open: false,
+          paused: false
     };
     this.tcpStreams.set(streamId, state);
     socket.__privateFrpStreamId = streamId;
 
-    writeSocket(agent.socket, encodeFrame({
+    const ok = this.writeToAgent(agent, encodeFrame({
       type: FRAME_TYPES.DIAL_TCP,
       streamId,
       payload: {
@@ -315,6 +353,7 @@ export class ControlPlane {
         clientAddress: String(socket.remoteAddress ?? 'unknown')
       } satisfies DialTcpFrame
     }));
+    if (!ok) this.pauseTcpStream(state);
   }
 
   private onTcpClientData(_tunnel: TunnelRecord, socket: any, data: unknown): void {
@@ -331,11 +370,20 @@ export class ControlPlane {
 
     const payload = asUint8Array(data);
     if (!state.open) {
-      state.queued.push(payload);
+      socket.end?.();
+      this.tcpStreams.delete(streamId);
+      const closingAgent = this.agentConnections.get(state.agentId);
+      if (closingAgent) {
+        this.writeToAgent(closingAgent, encodeFrame({
+          type: FRAME_TYPES.STREAM_CLOSE,
+          streamId,
+          payload: { streamId, reason: 'stream not open' } satisfies StreamCloseFrame
+        }));
+      }
       return;
     }
 
-    writeSocket(agent.socket, encodeFrame({
+    const ok = this.writeToAgent(agent, encodeFrame({
       type: FRAME_TYPES.STREAM_DATA,
       streamId,
       payload: {
@@ -343,6 +391,7 @@ export class ControlPlane {
         data: encodeData(payload)
       } satisfies StreamDataFrame
     }));
+    if (!ok) this.pauseTcpStream(state);
   }
 
   private onTcpClientClose(_tunnel: TunnelRecord, socket: any): void {
@@ -352,7 +401,7 @@ export class ControlPlane {
     if (!state) return;
     const agent = this.agentConnections.get(state.agentId);
     if (agent) {
-      writeSocket(agent.socket, encodeFrame({
+      this.writeToAgent(agent, encodeFrame({
         type: FRAME_TYPES.STREAM_CLOSE,
         streamId,
         payload: { streamId, reason: 'client closed' } satisfies StreamCloseFrame
@@ -366,7 +415,7 @@ export class ControlPlane {
     if (!session) return;
     const agent = session.agentId ? this.agentConnections.get(session.agentId) : null;
     if (!agent) return;
-    writeSocket(agent.socket, encodeFrame({
+    const ok = this.writeToAgent(agent, encodeFrame({
       type: FRAME_TYPES.UDP_DATA,
       streamId: sessionId,
       payload: {
@@ -376,6 +425,7 @@ export class ControlPlane {
         peerPort: session.peerPort
       }
     }));
+    void ok;
   }
 
   private onAgentSocketOpen(socket: Socket): void {
@@ -397,6 +447,93 @@ export class ControlPlane {
     const agentId = (socket as any).__privateFrpAgentId as string | undefined;
     if (!agentId) return;
     this.closeAgentConnection(agentId, 'socket closed');
+  }
+
+  private onAgentSocketDrain(socket: Socket): void {
+    const agentId = (socket as any).__privateFrpAgentId as string | undefined;
+    if (!agentId) return;
+    const state = this.agentConnections.get(agentId);
+    if (!state) return;
+    this.flushAgentQueue(state);
+  }
+
+  private writeToAgent(state: AgentConnectionState, data: Uint8Array): boolean {
+    if (state.pendingBytes > 0) {
+      this.queueAgentBytes(state, data);
+      return this.backpressureStatus(state);
+    }
+
+    const written = writeSocket(state.socket, data);
+    if (written < 0) return false;
+    if (written < data.byteLength) {
+      this.queueAgentBytes(state, data.subarray(written));
+      return this.backpressureStatus(state);
+    }
+
+    return true;
+  }
+
+  private queueAgentBytes(state: AgentConnectionState, data: Uint8Array): void {
+    if (data.byteLength <= 0) return;
+    state.pendingWrites.push(data);
+    state.pendingBytes += data.byteLength;
+  }
+
+  private flushAgentQueue(state: AgentConnectionState): void {
+    while (state.pendingWrites.length > 0) {
+      const chunk = state.pendingWrites[0];
+      if (!chunk) break;
+      const written = writeSocket(state.socket, chunk);
+      if (written < 0) {
+        this.closeAgentConnection(state.agentId, 'socket closed');
+        return;
+      }
+      if (written < chunk.byteLength) {
+        state.pendingWrites[0] = chunk.subarray(written);
+        state.pendingBytes -= written;
+        return;
+      }
+
+      state.pendingWrites.shift();
+      state.pendingBytes -= chunk.byteLength;
+    }
+
+    if (state.pendingBytes === 0) {
+      this.resumeAgentStreams(state.agentId);
+    }
+  }
+
+  private backpressureStatus(state: AgentConnectionState): boolean {
+    if (state.pendingBytes > MAX_AGENT_QUEUE_BYTES) {
+      const now = nowMs();
+      if (now - this.lastBackpressureLogAt > BACKPRESSURE_LOG_MS) {
+        this.lastBackpressureLogAt = now;
+        console.warn(`[agent] backpressure on ${state.agentId} queue=${state.pendingBytes}`);
+      }
+    }
+    return state.pendingBytes === 0;
+  }
+
+  private pauseTcpStream(state: TcpClientState): void {
+    if (state.paused) return;
+    state.paused = true;
+    try {
+      state.socket.pause?.();
+    } catch {
+      // ignore
+    }
+  }
+
+  private resumeAgentStreams(agentId: string): void {
+    for (const stream of this.tcpStreams.values()) {
+      if (stream.agentId !== agentId || !stream.paused) continue;
+      stream.paused = false;
+      try {
+        stream.socket.resume?.();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private handleAgentFrame(socket: Socket, frame: Frame): void {
@@ -422,12 +559,14 @@ export class ControlPlane {
           remoteAddress: String((socket as any).remoteAddress ?? '') || null,
           connectedAt: nowMs(),
           lastHeartbeat: nowMs(),
-          lastLatency: null
+          lastLatency: null,
+          pendingWrites: [],
+          pendingBytes: 0
         };
         this.agentConnections.set(agent.id, state);
         this.store.setAgentConnections(agent.id, 0);
         this.store.touchAgent(agent.id, nowMs(), null, state.remoteAddress);
-        writeSocket(socket, encodeFrame({
+        this.writeToAgent(state, encodeFrame({
           type: FRAME_TYPES.SERVER_HELLO,
           payload: {
             serverTime: nowMs(),
@@ -466,15 +605,6 @@ export class ControlPlane {
         const state = this.tcpStreams.get(payload.streamId);
         if (!state) return;
         state.open = true;
-        for (const queued of state.queued) {
-          const agent = this.agentConnections.get(state.agentId);
-          agent?.socket && writeSocket(agent.socket, encodeFrame({
-            type: FRAME_TYPES.STREAM_DATA,
-            streamId: state.streamId,
-            payload: { streamId: state.streamId, data: encodeData(queued) } satisfies StreamDataFrame
-          }));
-        }
-        state.queued = [];
         return;
       }
       case FRAME_TYPES.STREAM_DATA: {
@@ -517,7 +647,7 @@ export class ControlPlane {
       enabled: true,
       tunnels
     };
-    writeSocket(agent.socket, encodeFrame({
+    this.writeToAgent(agent, encodeFrame({
       type: FRAME_TYPES.CONFIG_PUSH,
       payload: config
     }));
