@@ -22,6 +22,7 @@ export interface AgentRecord {
   latencyMs: number | null;
   remoteAddress: string | null;
   activeConnections: number;
+  connected?: boolean;
 }
 
 export interface AgentConfig {

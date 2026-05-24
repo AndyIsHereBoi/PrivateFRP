@@ -51,6 +51,7 @@ export class AgentClient {
   private readonly tcpStreams = new Map<string, LocalTcpStream>();
   private readonly udpSessions = new Map<string, LocalUdpSession>();
   private tunnels = new Map<string, TunnelRecord>();
+  private stopping = false;
 
   constructor(private readonly config: AgentRuntimeConfig) {}
 
@@ -58,11 +59,24 @@ export class AgentClient {
     void this.connectLoop();
   }
 
+  stop(): void {
+    this.stopping = true;
+    this.stopHeartbeat();
+    this.cleanupAllStreams();
+    try {
+      this.socket?.close?.();
+    } catch {
+      // ignore
+    }
+    this.socket = null;
+  }
+
   private async connectLoop(): Promise<void> {
-    while (true) {
+    while (!this.stopping) {
       try {
         await this.connectOnce();
       } catch (error) {
+        if (this.stopping) break;
         console.error('[agent] connection failed', error);
         await new Promise(resolve => setTimeout(resolve, this.config.reconnectDelayMs));
       }

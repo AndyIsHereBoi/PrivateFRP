@@ -1,6 +1,6 @@
 import dgram from 'node:dgram';
 import { connect, type Socket } from 'bun';
-import { DEFAULTS, FRAME_TYPES, type AgentConfig, type DialTcpFrame, type DialUdpSessionFrame, type Frame, type StreamCloseFrame, type StreamDataFrame, type TunnelRecord } from '@privatefrp/shared';
+import { DEFAULTS, FRAME_TYPES, type AgentConfig, type AgentRecord, type DialTcpFrame, type DialUdpSessionFrame, type Frame, type StreamCloseFrame, type StreamDataFrame, type TunnelRecord } from '@privatefrp/shared';
 import { encodeData, encodeFrame, decodeData, FrameParser, nowMs } from '@privatefrp/shared';
 import type { ServerRuntimeConfig } from '@privatefrp/shared';
 import type { ServerStore } from './store';
@@ -123,7 +123,7 @@ export class ControlPlane {
     }
   }
 
-  getAgents(): ReturnType<ServerStore['listAgents']> {
+  getAgents(): Array<AgentRecord & { connected: boolean }> {
     return this.store.listAgents().map(agent => {
       const live = this.agentConnections.get(agent.id);
       return {
@@ -131,7 +131,8 @@ export class ControlPlane {
         remoteAddress: live?.remoteAddress ?? agent.remoteAddress,
         lastHeartbeat: live?.lastHeartbeat ?? agent.lastHeartbeat,
         latencyMs: live?.lastLatency ?? agent.latencyMs,
-        activeConnections: agent.activeConnections
+        activeConnections: agent.activeConnections,
+        connected: Boolean(live)
       };
     });
   }
@@ -162,6 +163,7 @@ export class ControlPlane {
   createTunnel(input: Omit<TunnelRecord, 'id' | 'createdAt'>): TunnelRecord {
     const tunnel = this.store.createTunnel(input);
     this.refreshTunnelListeners().catch(console.error);
+    this.pushConfigToAllAgents();
     this.broadcastDashboard();
     return tunnel;
   }
@@ -169,6 +171,7 @@ export class ControlPlane {
   updateTunnel(tunnelId: string, patch: Partial<Omit<TunnelRecord, 'id' | 'createdAt'>>): TunnelRecord | null {
     const tunnel = this.store.updateTunnel(tunnelId, patch);
     this.refreshTunnelListeners().catch(console.error);
+    this.pushConfigToAllAgents();
     this.broadcastDashboard();
     return tunnel;
   }
@@ -176,12 +179,14 @@ export class ControlPlane {
   deleteTunnel(tunnelId: string): void {
     this.store.deleteTunnel(tunnelId);
     this.refreshTunnelListeners().catch(console.error);
+    this.pushConfigToAllAgents();
     this.broadcastDashboard();
   }
 
   setTunnelEnabled(tunnelId: string, enabled: boolean): TunnelRecord | null {
     const tunnel = this.store.setTunnelEnabled(tunnelId, enabled);
     this.refreshTunnelListeners().catch(console.error);
+    this.pushConfigToAllAgents();
     this.broadcastDashboard();
     return tunnel;
   }
@@ -448,7 +453,13 @@ export class ControlPlane {
         return;
       }
       case FRAME_TYPES.CONFIG_ACK:
-        return;
+        {
+          const agentId = (socket as any).__privateFrpAgentId as string | undefined;
+          if (agentId) {
+            console.log(`[agent] config ack ${agentId}`);
+          }
+          return;
+        }
       case FRAME_TYPES.STREAM_OPEN: {
         const payload = frame.payload as { streamId?: string } | undefined;
         if (!payload?.streamId) return;
@@ -510,6 +521,13 @@ export class ControlPlane {
       type: FRAME_TYPES.CONFIG_PUSH,
       payload: config
     }));
+    console.log(`[agent] config push ${agentId} (${tunnels.length} tunnels)`);
+  }
+
+  private pushConfigToAllAgents(): void {
+    for (const agentId of this.agentConnections.keys()) {
+      this.pushConfigToAgent(agentId);
+    }
   }
 
   private closeAgentConnection(agentId: string, reason: string): void {

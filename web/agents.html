@@ -93,9 +93,10 @@
         }
 
         tbody.innerHTML = agents.map(a => {
+          const isConnected = Boolean(a.connected ?? (a.lastHeartbeat && (Date.now() - Number(a.lastHeartbeat) < 15000)));
           const status = !a.enabled
             ? '<span class="badge badge-gray">Disabled</span>'
-            : a.connected
+            : isConnected
             ? '<span class="badge badge-green">Connected</span>'
             : '<span class="badge badge-gray">Offline</span>';
           const latency = a.latencyMs === null || a.latencyMs === undefined

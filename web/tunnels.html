@@ -203,7 +203,7 @@
       };
 
       const res = await fetch('/api/tunnels/' + encodeURIComponent(id), {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -235,7 +235,7 @@
 
     async function deleteTunnel(id, name) {
       if (!confirm("Delete tunnel '" + name + "'?")) return;
-      const res = await fetch('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
+      const res = await fetch('/api/tunnels/' + encodeURIComponent(id) + '/delete', { method: 'POST' });
       if (!res.ok) { window.showToast('Failed to delete tunnel'); return; }
       await refreshData();
     }

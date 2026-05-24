@@ -15,5 +15,13 @@ export async function startAgent(): Promise<void> {
   const trustStoreDir = dirname(isAbsolute(config.trustStorePath) ? config.trustStorePath : resolve(process.cwd(), config.dataDir || 'data', config.trustStorePath));
   await mkdir(trustStoreDir, { recursive: true });
   client.start();
+  const shutdown = (signal: string) => {
+    globalThis.console.log(`[agent] received ${signal}, shutting down...`);
+    client.stop();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
   globalThis.console.log(`[agent] connecting to ${config.serverHost}:${config.serverPort}`);
 }
