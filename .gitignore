@@ -1,12 +1,6 @@
 # Dependencies
 node_modules/
 
-
-# Environment files (containing secrets)
-server.env
-agent.env
-.env
-
 # Logs
 logs/
 *.log

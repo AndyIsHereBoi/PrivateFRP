@@ -42,14 +42,20 @@ export async function startServer(): Promise<void> {
   const store = new ServerStore(config.databasePath);
   let dashboard!: DashboardServer;
 
-  const control = new ControlPlane(config, store, () => dashboard?.notify(), process.cwd());
-  dashboard = new DashboardServer(config, control, process.cwd());
+  const runtimeConfig = {
+    ...config,
+    tlsCertPath: certPath,
+    tlsKeyPath: keyPath
+  };
+
+  const control = new ControlPlane(runtimeConfig, store, () => dashboard?.notify(), process.cwd());
+  dashboard = new DashboardServer(runtimeConfig, control, process.cwd());
 
   await control.start();
   dashboard.start();
 
-  globalThis.console.log(`[server] agent tls control plane on ${config.host}:${config.agentPort}`);
-  globalThis.console.log(`[server] dashboard http on ${config.host}:${config.dashboardPort}`);
+  globalThis.console.log(`[server] agent tls control plane on ${runtimeConfig.host}:${runtimeConfig.agentPort}`);
+  globalThis.console.log(`[server] dashboard http on ${runtimeConfig.host}:${runtimeConfig.dashboardPort}`);
   const shutdown = async (signal: string) => {
     try {
       globalThis.console.log(`[server] received ${signal}, shutting down...`);
