@@ -10,4 +10,9 @@ COPY web ./web
 RUN bun install
 
 ENV SERVER_MODE=1
+# Install openssl so fallback cert generation works in minimal base images
+## Do not install external packages in the image; rely on project dependencies.
+# Ensure SIGINT is forwarded to the process
+STOPSIGNAL SIGINT
+
 CMD ["bun", "run", "packages/server/src/cli.ts"]

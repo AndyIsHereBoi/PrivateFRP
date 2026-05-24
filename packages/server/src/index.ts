@@ -6,7 +6,6 @@ import { DashboardServer } from './dashboard';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve, isAbsolute } from 'node:path';
-import { execSync } from 'node:child_process';
 
 export async function startServer(): Promise<void> {
   const config = readServerRuntimeConfig(process.env);
@@ -24,9 +23,8 @@ export async function startServer(): Promise<void> {
   // Ensure cert directory exists
   await mkdir(dirname(certPath), { recursive: true });
 
-  // Auto-generate self-signed cert/key if they don't exist (prefer JS module)
+  // Auto-generate self-signed cert/key if they don't exist using an in-process module
   if (!existsSync(certPath) || !existsSync(keyPath)) {
-    let generated = false;
     try {
       const mod = await import('selfsigned');
       const selfsigned = (mod && (mod as any).default) ? (mod as any).default : mod;
@@ -35,21 +33,10 @@ export async function startServer(): Promise<void> {
       await writeFile(keyPath, pems.private, 'utf8');
       await writeFile(certPath, pems.cert, 'utf8');
       globalThis.console.log(`[server] generated self-signed cert at ${certPath}`);
-      generated = true;
     } catch (err) {
-      globalThis.console.warn('[server] selfsigned module not available or failed, attempting openssl fallback');
-    }
-
-    if (!generated) {
-      try {
-        execSync(
-          `openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 365 -subj "/CN=${config.host}" -keyout "${keyPath}" -out "${certPath}"`,
-          { stdio: 'ignore' }
-        );
-        globalThis.console.log(`[server] generated self-signed cert at ${certPath}`);
-      } catch (err) {
-        globalThis.console.warn('[server] failed to generate self-signed certs automatically; please provide cert/key at:', certPath, keyPath);
-      }
+      console.error('[server] failed to generate self-signed certs: selfsigned module missing or generation failed');
+      console.error('[server] ensure you ran `bun install` so `selfsigned` is available, or provide cert/key files at:', certPath, keyPath);
+      process.exit(1);
     }
   }
   const store = new ServerStore(config.databasePath);
