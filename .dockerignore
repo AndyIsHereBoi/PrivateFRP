@@ -1,6 +1,5 @@
 # Dependencies (will be reinstalled in container)
 node_modules
-bun.lock
 
 # Build outputs
 dist
