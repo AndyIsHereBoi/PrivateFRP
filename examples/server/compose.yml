@@ -1,15 +1,10 @@
 services:
-  server:
+  privatefrp-server:
     image: ghcr.io/andyishereboi/privatefrp-server:latest
-    ports:
-      - "7000:7000"
-      - "8089:8089"
-    environment:
-      - SERVER_PORT=7000
-      - DASHBOARD_PORT=8089
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - DATABASE_PATH=./data/privatefrp.db
-      - TLS_CERT=
-      - TLS_KEY=
+    network_mode: host
+    env_file:
+      - ./env.example
     volumes:
       - ./data:/app/data
+      - ./data/certs:/app/certs:ro
+    restart: unless-stopped

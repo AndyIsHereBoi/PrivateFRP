@@ -1,169 +1,113 @@
-import { FrameType, TunnelType } from "./constants.js";
+export type TunnelType = 'tcp' | 'udp' | 'tcp+udp';
 
-/**
- * AgentHello frame payload
- */
-export interface AgentHelloPayload {
-  version: string;
-  agentId: string;
-  secret: string;
-}
-
-/**
- * ServerHello frame payload
- */
-export interface ServerHelloPayload {
-  version: string;
-  serverId: string;
-  success: boolean;
-  message?: string;
-}
-
-/**
- * Heartbeat frame payload
- */
-export interface HeartbeatPayload {
-  timestamp: number;
-  latency?: number;
-}
-
-/**
- * Tunnel configuration for a single tunnel
- */
-export interface TunnelConfig {
+export interface TunnelRecord {
   id: string;
   name: string;
   type: TunnelType;
   listenPort: number;
   targetHost: string;
   targetPort: number;
+  agentId: string | null;
   enabled: boolean;
   createdAt: number;
 }
 
-/**
- * Agent configuration payload
- */
-export interface AgentConfigPayload {
-  agentId: string;
-  agentName: string;
-  tunnels: TunnelConfig[];
+export interface AgentRecord {
+  id: string;
+  name: string;
+  secretHash: string;
+  enabled: boolean;
+  createdAt: number;
+  lastHeartbeat: number | null;
+  latencyMs: number | null;
+  remoteAddress: string | null;
+  activeConnections: number;
 }
 
-/**
- * DialTCP frame payload
- */
-export interface DialTcpPayload {
-  streamId: number;
+export interface AgentConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  tunnels: TunnelRecord[];
+}
+
+export interface AgentHelloFrame {
+  agentId: string;
+  agentSecret: string;
+  agentName?: string;
+  protocolVersion: number;
+}
+
+export interface ServerHelloFrame {
+  serverTime: number;
+  agentName: string;
+}
+
+export interface HeartbeatFrame {
+  timestamp: number;
+}
+
+export interface ConfigPushFrame {
+  agentId: string;
+  tunnels: TunnelRecord[];
+}
+
+export interface DialTcpFrame {
+  streamId: string;
+  tunnelId: string;
+  clientAddress: string;
+}
+
+export interface DialUdpSessionFrame {
+  sessionId: string;
+  tunnelId: string;
+  peerAddress: string;
+  peerPort: number;
   targetHost: string;
   targetPort: number;
 }
 
-/**
- * DialUDP session frame payload
- */
-export interface DialUdpSessionPayload {
-  sessionId: number;
-  peerAddr: string;
+export interface StreamOpenFrame {
+  streamId: string;
 }
 
-/**
- * Data connection hello payload
- */
-export interface DataConnHelloPayload {
-  agentId: string;
-  secret: string;
+export interface StreamDataFrame {
+  streamId: string;
+  data: string;
 }
 
-/**
- * UDP data frame payload
- */
-export interface UdpDataPayload {
-  sessionId: number;
-  data: Uint8Array;
-}
-
-/**
- * Pool hello payload
- */
-export interface PoolHelloPayload {
-  agentId: string;
-}
-
-/**
- * Dial assign payload
- */
-export interface DialAssignPayload {
-  streamId: number;
-  tunnelId: string;
-}
-
-/**
- * Stream open frame payload
- */
-export interface StreamOpenPayload {
-  streamId: number;
-  tunnelId: string;
-  peerAddr?: string;
-}
-
-/**
- * Stream data frame payload
- */
-export interface StreamDataPayload {
-  streamId: number;
-  data: Uint8Array;
-  offset?: number;
-  length?: number;
-}
-
-/**
- * Stream close frame payload
- */
-export interface StreamClosePayload {
-  streamId: number;
+export interface StreamCloseFrame {
+  streamId: string;
   reason?: string;
 }
 
-/**
- * Base frame structure for all protocol messages
- */
-export interface Frame {
-  type: FrameType;
-  id: number;
-  body: Uint8Array;
+export interface UdpDataFrame {
+  sessionId: string;
+  data: string;
+  peerAddress?: string;
+  peerPort?: number;
 }
 
-/**
- * Error types for the protocol
- */
-export class ProtocolError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ProtocolError";
-  }
+export interface ErrorFrame {
+  message: string;
 }
 
-/**
- * Connection error types
- */
-export enum ConnectionErrorCode {
-  AuthFailed = "AUTH_FAILED",
-  InvalidFrame = "INVALID_FRAME",
-  Timeout = "TIMEOUT",
-  Closed = "CLOSED",
-  Unknown = "UNKNOWN",
+export interface Frame<T = unknown> {
+  type: string;
+  reqId?: string;
+  streamId?: string;
+  payload?: T;
 }
 
-/**
- * Connection error class
- */
-export class ConnectionError extends Error {
-  code: ConnectionErrorCode;
+export type DashboardWsRequest =
+  | { reqId: string; type: 'agents'; payload: Record<string, never> }
+  | { reqId: string; type: 'tunnels'; payload: Record<string, never> }
+  | { reqId: string; type: 'status'; payload: Record<string, never> }
+  | { reqId: string; type: 'refresh'; payload: Record<string, never> };
 
-  constructor(code: ConnectionErrorCode, message: string) {
-    super(message);
-    this.name = "ConnectionError";
-    this.code = code;
-  }
+export interface DashboardWsResponse {
+  reqId: string;
+  ok: boolean;
+  data?: unknown;
+  error?: string;
 }

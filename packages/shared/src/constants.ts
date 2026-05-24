@@ -1,59 +1,31 @@
-// Message Type Constants - Frame Types for Agent-Server Protocol
+export const PROTOCOL_VERSION = 1;
 
-/**
- * Frame types used in the PrivateFRP protocol
- */
-export enum FrameType {
-  // Handshake frames
-  AgentHello = 0x01,
-  ServerHello = 0x02,
+export const FRAME_TYPES = {
+  AGENT_HELLO: 'AgentHello',
+  SERVER_HELLO: 'ServerHello',
+  HEARTBEAT: 'Heartbeat',
+  CONFIG_PUSH: 'ConfigPush',
+  CONFIG_ACK: 'ConfigAck',
+  DIAL_TCP: 'DialTcp',
+  DIAL_UDP_SESSION: 'DialUdpSession',
+  STREAM_OPEN: 'StreamOpen',
+  STREAM_DATA: 'StreamData',
+  STREAM_CLOSE: 'StreamClose',
+  UDP_DATA: 'UdpData',
+  ERROR: 'Error'
+} as const;
 
-  // Control frames
-  Heartbeat = 0x10,
-  ConfigPush = 0x11,
-  DialTcp = 0x12,
-  DialUdpSession = 0x13,
+export const DEFAULTS = {
+  SERVER_HOST: '0.0.0.0',
+  AGENT_PORT: 7000,
+  DASHBOARD_PORT: 8080,
+  PUBLIC_HTTP_PORT: 9000,
+  AGENT_RECONNECT_MS: 1000,
+  AGENT_RECONNECT_MAX_MS: 15000,
+  HEARTBEAT_INTERVAL_MS: 5000,
+  STREAM_IDLE_TIMEOUT_MS: 30000
+} as const;
 
-  // Data connection frames
-  DataConnHello = 0x20,
-  UdpData = 0x21,
-
-  // Stream frames
-  PoolHello = 0x30,
-  DialAssign = 0x31,
-  StreamOpen = 0x40,
-  StreamData = 0x41,
-  StreamClose = 0x42,
-}
-
-/**
- * Tunnel types supported by PrivateFRP
- */
-export enum TunnelType {
-  TCP = "tcp",
-  UDP = "udp",
-  TCPUDP = "tcp+udp",
-}
-
-/**
- * Status codes for agent connections
- */
-export enum AgentStatus {
-  Disconnected = "disconnected",
-  Connecting = "connecting",
-  Connected = "connected",
-  Error = "error",
-}
-
-/**
- * Default ports used by PrivateFRP
- */
-export const DEFAULT_PORTS = {
-  AGENT: 7000,
-  DASHBOARD: 8089,
-};
-
-/**
- * Protocol version
- */
-export const PROTOCOL_VERSION = "1.0";
+export const COOKIE_NAMES = {
+  DASHBOARD_SESSION: 'privatefrp_dashboard_session'
+} as const;

@@ -1,26 +1,20 @@
-// PrivateFRP Server Entry Point
+import process from 'node:process';
+import { readServerRuntimeConfig } from '@privatefrp/shared';
+import { ServerStore } from './store';
+import { ControlPlane } from './control';
+import { DashboardServer } from './dashboard';
 
-import { AgentServer } from "./server/agent-server.js";
-import { DashboardServer } from "./server/dashboard-server.js";
-import { Database } from "./database/index.js";
-import { loadServerConfig } from "@privatefrp/shared";
+export async function startServer(): Promise<void> {
+  const config = readServerRuntimeConfig(process.env);
+  const store = new ServerStore(config.databasePath);
+  let dashboard!: DashboardServer;
 
-console.log("PrivateFRP Server starting...");
+  const control = new ControlPlane(config, store, () => dashboard?.notify(), process.cwd());
+  dashboard = new DashboardServer(config, control, process.cwd());
 
-// Load configuration from environment
-const config = loadServerConfig();
+  await control.start();
+  dashboard.start();
 
-// Initialize database with configured path
-const db = new Database(config.databasePath);
-
-// Create agent server for handling agent connections
-const agentServer = new AgentServer(config.serverPort);
-
-// Create dashboard server for web interface
-const dashboardServer = new DashboardServer(db, config.dashboardPort);
-
-// Start servers
-await agentServer.start();
-await dashboardServer.start();
-
-console.log("PrivateFRP Server started successfully");
+  globalThis.console.log(`[server] agent tls control plane on ${config.host}:${config.agentPort}`);
+  globalThis.console.log(`[server] dashboard http on ${config.host}:${config.dashboardPort}`);
+}

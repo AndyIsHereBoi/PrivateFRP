@@ -5,7 +5,7 @@
   <title>PrivateFRP - Tunnels</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body data-public-ip="YOUR_PUBLIC_IP">
   <header class="topbar">
     <div class="topbar-inner">
       <div class="topbar-left">
@@ -100,7 +100,7 @@
 
   <script src="common.js"></script>
   <script>
-    const PUBLIC_IP = 'YOUR_PUBLIC_IP';
+    const PUBLIC_IP = document.body?.dataset.publicIp || '';
     let AGENTS = [];
     let TUNNELS = [];
     let agentSelectsFrozen = false;

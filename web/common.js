@@ -3,7 +3,7 @@
   const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const wsUrl = wsProtocol + '://' + location.host + '/ws/dashboard';
   const LOGIN_URL = '/login';
-  const PUBLIC_IP = '';
+  const PUBLIC_IP = document.body?.dataset.publicIp || '';
   let ws = null;
   let connectPromise = null;
   let reqSeq = 0;
@@ -173,7 +173,12 @@
 })();
 
 function esc(s) {
-  return String(s).replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>').replace(/\"/g,'"');
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function fmtBytes(bytes) {

@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@privatefrp/shared": ["packages/shared/src/index.ts"],
+      "@privatefrp/shared/*": ["packages/shared/src/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "packages/*/src/**/*.ts"
+  ]
+}

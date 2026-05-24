@@ -1,34 +1,13 @@
-# Build stage - uses Bun to compile TypeScript to JS
-FROM oven/bun:1.3.10 AS builder
+FROM oven/bun:1.3.10
 
 WORKDIR /app
 
-# Copy package files first for better caching
-COPY package.json bun.lock ./
-COPY packages/shared/package.json ./packages/shared/
+COPY package.json tsconfig.base.json tsconfig.json ./
+COPY packages ./packages
+COPY src ./src
+COPY web ./web
 
-# Install dependencies (cached unless package.json changes)
-RUN bun install --frozen-lockfile
+RUN bun install
 
-# Copy source code (this will invalidate cache on code changes)
-COPY packages/ ./packages/
-COPY tsconfig.json ./
-
-# Build the server using Bun's bundler
-RUN bun build ./packages/server/src/index.ts \
-    --outfile ./dist/server.js \
-    --target bun \
-    --minify
-
-# Runtime stage - minimal image with just Bun and compiled JS
-FROM oven/bun:1.3.10-slim
-
-WORKDIR /app
-
-# Copy only the compiled output and necessary files
-COPY --from=builder /app/dist ./dist
-COPY packages/shared/package.json ./packages/shared/
-
-EXPOSE 7000 8089
-
-CMD ["bun", "./dist/server.js"]
+ENV SERVER_MODE=1
+CMD ["bun", "run", "packages/server/src/cli.ts"]
