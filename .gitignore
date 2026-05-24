@@ -1,9 +1,30 @@
+# Dependencies
 node_modules/
-dist/
-certs/
-data/
+
+
+# Environment files (containing secrets)
 server.env
 agent.env
-bun.lockb
-bun.lock
-log.txt
+.env
+
+# Logs
+logs/
+*.log
+
+# Data directory (database)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+temp

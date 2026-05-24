@@ -1,27 +1,42 @@
-version: "3.9"
-
-# Docker Compose for PrivateFRP
-# Runs the server. The agent runs separately on your private machine.
-# See README.md for setup instructions.
-
 services:
   server:
     build:
       context: .
       dockerfile: Dockerfile.server
+    container_name: privatefrp-server
     restart: unless-stopped
-    # host networking lets the server bind tunnel ports directly without enumerating
-    # every port in a `ports` list. Ensure ports 7000, 8080, and any tunnel ports
-    # are free on the host before starting.
-    network_mode: host
-    volumes:
-      - ./data:/app/data         # SQLite database
-      - ./certs:/app/certs:ro    # TLS certificates
+    ports:
+      - "7000:7000"
+      - "8089:8089"
     environment:
-      AGENT_PORT: ${AGENT_PORT:-7000}
-      DASHBOARD_PORT: ${DASHBOARD_PORT:-8089}
-      AGENT_TLS_CERT: /app/certs/server.crt
-      AGENT_TLS_KEY: /app/certs/server.key
-      DASHBOARD_SECRET: ${DASHBOARD_SECRET:-admin:changeme}
-      DATA_DIR: /app/data
-      PUBLIC_IP: ${PUBLIC_IP:-}
+      - SERVER_PORT=7000
+      - DASHBOARD_PORT=8089
+      - LOG_LEVEL=info
+    volumes:
+      - server-data:/data
+    networks:
+      - privatefrp-network
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: privatefrp-agent
+    restart: unless-stopped
+    environment:
+      - SERVER_HOST=privatefrp-server
+      - SERVER_PORT=7000
+      - AGENT_ID=agent-1
+      - AGENT_SECRET=your-secret-here
+      - LOG_LEVEL=info
+    networks:
+      - privatefrp-network
+    depends_on:
+      - server
+
+networks:
+  privatefrp-network:
+    driver: bridge
+
+volumes:
+  server-data:

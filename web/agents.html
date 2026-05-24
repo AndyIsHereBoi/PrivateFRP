@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PrivateFRP - Agents</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-left">
+        <div class="brand">PrivateFRP</div>
+        <div class="tabs">
+          <a class="tab active" href="agents.html">Agents</a>
+          <a class="tab" href="tunnels.html">Tunnels</a>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="public-ip-wrap">
+          <span class="public-ip-label">Public IP</span>
+          <code class="public-ip-value" id="public-ip-value">YOUR_PUBLIC_IP</code>
+          <button class="btn-copy" id="copy-public-ip-btn" type="button">Copy</button>
+        </div>
+        <form method="POST" action="/logout" style="display:inline">
+          <button class="btn btn-danger" type="submit">Sign Out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+
+  <div id="toast-wrap" class="toast-wrap" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="container">
+    <h1>Agents</h1>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Latency</th>
+          <th>Current Connections</th>
+          <th>IP Address</th>
+          <th>Last Heartbeat</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="agents-tbody">
+        <tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>
+      </tbody>
+    </table>
+
+    <div class="card">
+      <h3 style="margin-top:0">Register Agent</h3>
+      <p style="color:#94a3b8;font-size:0.9rem;margin-bottom:1rem">Create a new agent credential pair for a machine you want to connect.</p>
+      <button class="btn btn-primary" onclick="document.getElementById('registerModal').classList.add('open')">Register New Agent</button>
+    </div>
+
+    <div class="modal-bg" id="registerModal" onclick="if(event.target===this)this.classList.remove('open')">
+      <div class="modal">
+        <h2>Register New Agent</h2>
+        <p style="color:#94a3b8;margin:0.5rem 0 1rem;font-size:0.9rem">Give your agent a name and click Generate to get its credentials.</p>
+        <label>Agent Name</label>
+        <input id="regName" placeholder="my-home-server" style="margin-bottom:1rem">
+        <div id="regResult" style="display:none">
+          <label>Agent ID</label><div class="code-block" id="regId"></div>
+          <label>Agent Secret</label><div class="code-block" id="regSecret"></div>
+          <p style="color:#fbbf24;font-size:0.8rem">Copy the secret now - it won't be shown again.</p>
+        </div>
+        <div class="actions mt-1">
+          <button class="btn btn-success" onclick="registerAgent()">Generate</button>
+          <button class="btn" style="background:#334155" onclick="document.getElementById('registerModal').classList.remove('open')">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="common.js"></script>
+  <script>
+    let lastAgentsRenderKey = '';
+
+    async function refreshAgents() {
+      try {
+        const agents = await window.dashboardWsRequest('agents', {});
+        const tbody = document.getElementById('agents-tbody');
+        const renderKey = JSON.stringify(agents || []);
+        if (renderKey === lastAgentsRenderKey) return;
+        lastAgentsRenderKey = renderKey;
+
+        if (!agents.length) {
+          tbody.innerHTML = '<tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = agents.map(a => {
+          const status = !a.enabled
+            ? '<span class="badge badge-gray">Disabled</span>'
+            : a.connected
+            ? '<span class="badge badge-green">Connected</span>'
+            : '<span class="badge badge-gray">Offline</span>';
+          const latency = a.latencyMs === null || a.latencyMs === undefined
+            ? '-'
+            : Math.max(0, Math.round(Number(a.latencyMs))) + ' ms';
+          const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '\u2014';
+          return `<tr>
+            <td><code style="font-size:0.78rem">${esc(a.id)}</code></td>
+            <td>${esc(a.name)}</td>
+            <td>${status}</td>
+            <td>${latency}</td>
+            <td>${Number(a.activeConnections || 0)}</td>
+            <td>${esc(a.remoteAddress || '') || '\u2014'}</td>
+            <td>${hb}</td>
+            <td>
+              <button class="btn btn-compact ${a.enabled ? 'btn-danger' : 'btn-success'}" data-agent-id="${esc(a.id)}" data-agent-enabled="${a.enabled ? '1' : '0'}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">${a.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-danger" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button>
+            </td>
+          </tr>`;
+        }).join('');
+      } catch (_) {}
+    }
+
+    async function toggleAgentEnabled(id, enabledFlag) {
+      const currentlyEnabled = enabledFlag === '1';
+      const res = await fetch('/api/agents/' + encodeURIComponent(id) + '/enabled', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: !currentlyEnabled }),
+      });
+      if (!res.ok) {
+        window.showToast('Failed to update agent state');
+        return;
+      }
+      await refreshAgents();
+    }
+
+    async function deleteAgent(id, name) {
+      if (!confirm("Delete agent '" + name + "'? This will unassign its tunnels.")) return;
+      const res = await fetch('/api/agents/' + encodeURIComponent(id) + '/delete', { method: 'POST' });
+      if (!res.ok) { window.showToast('Failed to delete agent'); return; }
+      await refreshAgents();
+    }
+
+    async function registerAgent() {
+      const name = document.getElementById('regName').value.trim();
+      const params = name ? '?name=' + encodeURIComponent(name) : '';
+      const res = await fetch('/api/agents/register' + params, { method: 'POST' });
+      const data = await res.json();
+      document.getElementById('regId').textContent = data.agentId;
+      document.getElementById('regSecret').textContent = data.agentSecret;
+      document.getElementById('regResult').style.display = 'block';
+      await refreshAgents();
+    }
+
+    refreshAgents();
+    setInterval(refreshAgents, 1000);
+  </script>
+</body>
+</html>

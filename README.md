@@ -1,261 +1,172 @@
-# PrivateFRP
+# PrivateFRP - TypeScript Rewrite
 
-PrivateFRP is a self-hosted reverse tunnel service for exposing local TCP/UDP
-services through a public server, with TLS-encrypted agent links and a simple
-web dashboard.
+PrivateFRP is a high-performance reverse proxy and tunneling solution written in TypeScript with Bun runtime.
 
-## Table of Contents
+## Architecture
 
-- [Highlights](#highlights)
-- [Quick Start](#quick-start)
-- [Dashboard Workflow](#dashboard-workflow)
-- [Typical Use Cases](#typical-use-cases)
-- [Notes](#notes)
-- [Backend Documentation](#backend-documentation)
-- [Run with Docker](#run-with-docker)
-- [License](#license)
-
-## Highlights
-
-- Self-hosted remote access for local services
-- TCP and UDP tunnel support
-- TLS-encrypted server-agent communication
-- Web dashboard for agent and tunnel management
-- Automatic agent reconnect and health tracking
-- Pre-warmed connection pool for low-latency new connections
-- Designed for latency-sensitive services (game servers, voice, real-time apps)
-
-## Quick Start
-
-Choose one install method:
-
-- [Using Release Binaries](#using-release-binaries)
-- [Quick Start (Docker)](#quick-start-docker)
-- [Quick Start (Local Bun)](#quick-start-local-bun)
-
-## Using Release Binaries
-
-The release workflow publishes these assets:
-
-- privatefrp-server-windows-x64.exe
-- privatefrp-agent-windows-x64.exe
-- privatefrp-server-linux-amd64
-- privatefrp-agent-linux-amd64
-
-### 1. Download binaries
-
-- Download one server binary and one agent binary for your platform from Releases.
-
-### 2. Create env files next to the binaries
-
-- Server binary reads server.env
-- Agent binary reads agent.env
-- Copy server.env.example to server.env
-- Copy agent.env.example to agent.env
-
-### 3. Start server, then start agent
-
-Windows (PowerShell):
-
-```powershell
-./privatefrp-server-windows-x64.exe
-./privatefrp-agent-windows-x64.exe
+```
+┌─────────────┐     TLS      ┌──────────────┐     TCP/UDP      ┌──────────────┐
+│   Agent     │◄────────────►│   Server     │◄────────────────►│  Local App   │
+└─────────────┘              └──────────────┘                  └──────────────┘
+                                                    │
+                                                    ▼
+                                            ┌──────────────┐
+                                            │ Dashboard UI │
+                                            └──────────────┘
 ```
 
-Linux (amd64):
+## Project Structure
+
+```
+new-PrivateFRP/
+├── packages/
+│   ├── shared/          # Shared types and protocol definitions
+│   │   └── src/
+│   │       ├── constants.ts    # Protocol constants
+│   │       ├── types.ts        # TypeScript interfaces
+│   │       ├── protocol/
+│   │       │   └── frame.ts    # Binary frame encoding/decoding
+│   │       └── utils/
+│   │           ├── env.ts      # Environment validation
+│   │           └── config.ts   # Configuration loader
+│   ├── server/          # Server implementation
+│   │   └── src/
+│   │       ├── index.ts              # Entry point
+│   │       ├── database/             # SQLite database layer
+│   │       ├── server/               # Agent and Dashboard servers
+│   │       └── utils/                # Utility functions
+│   └── agent/           # Agent implementation
+│       └── src/
+│           ├── index.ts              # Entry point
+│           ├── client/               # Agent client
+│           └── tunnel/               # Tunnel management
+├── web/                 # Dashboard web UI (vanilla JS)
+└── docs/                # Documentation
+```
+
+## Prerequisites
+
+- [Bun](https://bun.sh/) runtime (v1.0+)
+
+## Installation
 
 ```bash
-chmod +x ./privatefrp-server-linux-amd64 ./privatefrp-agent-linux-amd64
-./privatefrp-server-linux-amd64
-./privatefrp-agent-linux-amd64
-```
+# Clone the repository
+git clone <repository-url>
+cd new-PrivateFRP
 
-### 4. Optional: run as systemd services (Linux)
-
-Server unit example (/etc/systemd/system/privatefrp-server.service):
-
-```ini
-[Unit]
-Description=PrivateFRP Server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/privatefrp
-EnvironmentFile=/root/privatefrp/server.env
-ExecStart=/root/privatefrp/privatefrp-server-linux-amd64
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Agent unit example (/etc/systemd/system/privatefrp-agent.service):
-
-```ini
-[Unit]
-Description=PrivateFRP Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/privatefrp
-EnvironmentFile=/root/privatefrp/agent.env
-ExecStart=/root/privatefrp/privatefrp-agent-linux-amd64
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now privatefrp-server
-sudo systemctl enable --now privatefrp-agent
-```
-
-### 5. Finish in dashboard
-
-- Open http://<server-ip>:8080
-- Register agent and copy AGENT_ID + AGENT_SECRET
-- Put those values in agent.env and restart agent
-- Create your tunnel
-
-## Quick Start (Docker)
-
-### 1. Download the repository
-
-- Download this repository (zip or clone).
-
-### 2. Generate TLS certificates
-
-```bash
-bash scripts/generate-certs.sh
-```
-
-### 3. Configure and start the server
-
-```bash
-cp server.env.example server.env
-# Edit server.env and set DASHBOARD_SECRET
-bash scripts/start-server.sh
-```
-
-Dashboard: `http://<server-ip>:8080`
-
-### 4. Register an agent from the dashboard
-
-- Open the dashboard
-- Click Register Agent
-- Copy AGENT_ID and AGENT_SECRET (secret is shown once)
-
-### 4. Configure and start the agent
-
-```bash
-cp agent.env.example agent.env
-# Edit agent.env with SERVER_HOST, AGENT_ID, AGENT_SECRET
-bash scripts/start-agent.sh
-```
-
-### 5. Create a tunnel in the dashboard
-
-Create a tunnel with:
-
-- Type (`tcp` or `udp`)
-- Public listen port (on the server)
-- Target host/port (on the agent machine)
-- Agent assignment
-
-## Quick Start (Local Bun)
-
-### 1. Download the repository and install dependencies
-
-```bash
+# Install dependencies
 bun install
 ```
 
-### 2. Generate certs
+## Running
+
+### Server
 
 ```bash
-bash scripts/generate-certs.sh
+# Start the server with watch mode
+bun run dev:server
+
+# Or start directly (no watch)
+bun run start:server
 ```
 
-### 3. Configure env files
-
-- Copy `server.env.example` to `server.env`
-- Copy `agent.env.example` to `agent.env`
-
-### 4. Start server and agent
+### Agent
 
 ```bash
-bun --cwd packages/server run start
-bun --cwd packages/agent run start
+# Start the agent with watch mode
+bun run dev:agent
+
+# Or start directly (no watch)
+bun run start:agent
 ```
 
-## Dashboard Workflow
+## Configuration
 
-- Register agents
-- Create and remove tunnels
-- Monitor connected/offline status
-- Check last heartbeat and remote address
+### Server Environment Variables
 
-## Typical Use Cases
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERVER_PORT` | 7000 | Port for agent connections |
+| `DASHBOARD_PORT` | 8089 | Port for dashboard HTTP API |
+| `LOG_LEVEL` | info | Logging level: debug, info, warn, error |
 
-- Host a game server from home without router port-forwarding
-- Expose internal web apps for personal/team access
-- Route UDP services through a single remote endpoint
-- Keep a stable external endpoint while local network changes
+### Agent Environment Variables
 
-## Notes
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERVER_HOST` | - | Server hostname or IP (required) |
+| `SERVER_PORT` | 7000 | Server port |
+| `AGENT_ID` | - | Agent identifier (required) |
+| `AGENT_SECRET` | - | Agent secret for authentication (required) |
+| `LOG_LEVEL` | info | Logging level |
 
-- If using self-signed certs, set `TLS_REJECT_UNAUTHORIZED=false` on agents.
-- Ensure tunnel listen ports are exposed in Docker if you run the server in containers.
-- Agent credentials are generated from the dashboard and must match exactly.
-- Set `LOG_PATH` to control where runtime logs are written.
-- Server writes `tunnel.log` and `webserver.log`; agent writes `agent.log`.
+## API Endpoints
 
-## Backend Documentation
+### Authentication
 
-For protocol/architecture details and implementation rationale, see:
+- `POST /login` - Login with username/password
+- `POST /logout` - Logout current session
 
-- [backend.md](backend.md)
+### Agents
 
-## Run with Docker
+- `GET /api/agents` - List all agents
 
-Run these from the repo root.
+### Tunnels
 
-### Server host
+- `GET /api/tunnels` - List all tunnels
+- `POST /api/tunnels` - Create a new tunnel
+  ```json
+  {
+    "agentId": "agent-id",
+    "publicPort": 8080,
+    "localAddress": "localhost:3000",
+    "tunnelType": "tcp"
+  }
+  ```
+- `DELETE /api/tunnels/:id` - Delete a tunnel
+
+## Certificate Generation
+
+Generate self-signed certificates for development:
 
 ```bash
-cp server.env.example server.env
-# edit server.env (set DASHBOARD_SECRET and PUBLIC_IP)
-docker compose -f docker-compose.yml --env-file server.env up -d --build
+# Linux/macOS
+./generate-certs.sh
+
+# Windows
+.\generate-certs.ps1
 ```
 
-### Agent host
+## Docker Deployment
+
+### Using Docker Compose (Recommended)
+
+The project includes `docker-compose.yml` for easy deployment:
 
 ```bash
-cp agent.env.example agent.env
-# edit agent.env (set SERVER_HOST, AGENT_ID, AGENT_SECRET)
-docker compose -f docker-compose.agent.yml --env-file agent.env up -d --build
+# Build and start all services
+docker compose up --build
+
+# View logs
+docker compose logs -f
+
+# Stop services
+docker compose down
 ```
 
-### Stop
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for more details.
+
+## Development
 
 ```bash
-docker compose -f docker-compose.yml --env-file server.env down
-docker compose -f docker-compose.agent.yml --env-file agent.env down
+# Run tests
+bun test
+
+# Run type checking (via bun build)
+bun run build:shared
 ```
 
 ## License
 
 MIT
-

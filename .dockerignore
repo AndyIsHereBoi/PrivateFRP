@@ -1,0 +1,39 @@
+# Dependencies (will be reinstalled in container)
+node_modules
+bun.lock
+
+# Build outputs
+dist
+packages/*/dist
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Test files
+__tests__
+*.test.ts
+coverage
+
+# Documentation
+README.md
+docs
+*.md
+
+# Git files
+.git
+.gitignore
+
+# Docker files (not needed in build context)
+Dockerfile*
+docker-compose.yml
+.dockerignore
+
+# Environment examples (use volumes instead)
+.env.example
+server.env.example
+agent.env.example
+
+temp

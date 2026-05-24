@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PrivateFRP Login</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>PrivateFRP</h1>
+      <p class="subtitle">Sign in to the dashboard</p>
+      <!-- Error message will be shown here when returned from server -->
+      <!-- <div class="alert alert-error">Invalid username or password</div> -->
+      <form method="POST" action="/login">
+        <label>Username</label>
+        <input name="username" type="text" required autofocus autocomplete="username">
+        <label>Password</label>
+        <input name="password" type="password" required autocomplete="current-password">
+        <button class="btn btn-primary" style="width:100%;margin-top:0.5rem" type="submit">Sign In</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

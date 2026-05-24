@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PrivateFRP - Tunnels</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-left">
+        <div class="brand">PrivateFRP</div>
+        <div class="tabs">
+          <a class="tab" href="agents.html">Agents</a>
+          <a class="tab active" href="tunnels.html">Tunnels</a>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="public-ip-wrap">
+          <span class="public-ip-label">Public IP</span>
+          <code class="public-ip-value" id="public-ip-value">YOUR_PUBLIC_IP</code>
+          <button class="btn-copy" id="copy-public-ip-btn" type="button">Copy</button>
+        </div>
+        <form method="POST" action="/logout" style="display:inline">
+          <button class="btn btn-danger" type="submit">Sign Out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+
+  <div id="toast-wrap" class="toast-wrap" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="container">
+    <h1>Tunnels</h1>
+    <div id="groups"></div>
+
+    <h2>Create Tunnel</h2>
+    <div class="card compact">
+      <form id="createTunnelForm" onsubmit="createTunnel(event)">
+        <div class="create-tunnel-grid">
+          <div>
+            <label>Agent</label>
+            <select name="agentId" id="agentSelect"></select>
+          </div>
+          <div>
+            <label>Type</label>
+            <select name="type">
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+              <option value="tcp+udp">TCP + UDP</option>
+            </select>
+          </div>
+          <div>
+            <label>Name</label>
+            <input name="name" placeholder="my-tunnel" required>
+          </div>
+          <div>
+            <label>Public Port</label>
+            <input name="listenPort" type="number" min="1" max="65535" placeholder="8080" required>
+          </div>
+          <div>
+            <label>Local Service Host</label>
+            <input name="targetHost" placeholder="localhost" required>
+          </div>
+          <div>
+            <label>Local Service Port</label>
+            <input name="targetPort" type="number" min="1" max="65535" placeholder="3000" required>
+          </div>
+        </div>
+        <div class="create-actions">
+          <button class="btn btn-primary" type="submit">Create Tunnel</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal-bg" id="editTunnelModal" onclick="if(event.target===this)this.classList.remove('open')">
+      <div class="modal">
+        <h2>Edit Tunnel</h2>
+        <form id="editTunnelForm" onsubmit="saveTunnelEdit(event)">
+          <input type="hidden" name="id" id="editTunnelId">
+          <label>Name</label><input name="name" id="editName" required>
+          <label>Type</label>
+          <select name="type" id="editType">
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+            <option value="tcp+udp">TCP + UDP</option>
+          </select>
+          <label>Public Port</label><input name="listenPort" id="editListenPort" type="number" min="1" max="65535" required>
+          <label>Local Service Host</label><input name="targetHost" id="editTargetHost" required>
+          <label>Local Service Port</label><input name="targetPort" id="editTargetPort" type="number" min="1" max="65535" required>
+          <label>Agent</label><select name="agentId" id="editAgentId"></select>
+          <div class="actions mt-1">
+            <button class="btn btn-success" type="submit">Save</button>
+            <button class="btn" style="background:#334155" type="button" onclick="document.getElementById('editTunnelModal').classList.remove('open')">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="common.js"></script>
+  <script>
+    const PUBLIC_IP = 'YOUR_PUBLIC_IP';
+    let AGENTS = [];
+    let TUNNELS = [];
+    let agentSelectsFrozen = false;
+    let lastTunnelsRenderKey = '';
+
+    function updateAgentSelects() {
+      const unassignedOption = '<option value="">Unassigned</option>';
+      const agentOptions = AGENTS.length
+        ? AGENTS.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.id.slice(0,8))})</option>`).join('')
+        : '';
+      const options = unassignedOption + agentOptions;
+      document.getElementById('agentSelect').innerHTML = options;
+      document.getElementById('editAgentId').innerHTML = options;
+    }
+
+    function renderGroups() {
+      const byAgent = {};
+      for (const t of TUNNELS) {
+        if (!byAgent[t.agentId]) byAgent[t.agentId] = [];
+        byAgent[t.agentId].push(t);
+      }
+
+      const agentName = {};
+      AGENTS.forEach(a => { agentName[a.id] = a.name; });
+      agentName[''] = 'Unassigned';
+
+      const orderedAgentIds = [
+        '',
+        ...AGENTS.map(a => a.id),
+        ...Object.keys(byAgent).filter(id => id !== '' && !agentName[id]),
+      ];
+      const groupsEl = document.getElementById('groups');
+
+      if (!TUNNELS.length) {
+        groupsEl.innerHTML = '<div class="card" style="color:#64748b;text-align:center">No tunnels configured</div>';
+        return;
+      }
+
+      groupsEl.innerHTML = orderedAgentIds
+        .filter(id => (byAgent[id] || []).length > 0)
+        .map(id => {
+          const rows = byAgent[id].map(t => {
+            const badge = t.type === 'tcp'
+              ? '<span class="badge badge-blue">TCP</span>'
+              : t.type === 'udp'
+              ? '<span class="badge badge-purple">UDP</span>'
+              : '<span class="badge badge-blue">TCP</span> <span class="badge badge-purple">UDP</span>';
+            const stateBadge = t.enabled
+              ? '<span class="badge badge-green">Enabled</span>'
+              : '<span class="badge badge-gray">Disabled</span>';
+            const publicAddr = PUBLIC_IP ? esc(PUBLIC_IP) + ':' + t.listenPort : t.listenPort;
+            const toggleClass = t.enabled ? 'btn-danger' : 'btn-success';
+            const toggleLabel = t.enabled ? 'Disable' : 'Enable';
+            return `<tr>
+              <td>${esc(t.name)}</td>
+              <td>${badge} ${stateBadge}</td>
+              <td><code>${publicAddr}</code></td>
+              <td>${esc(t.targetHost)}:${t.targetPort}</td>
+              <td>
+                <button class="btn btn-edit" onclick="openEditTunnel('${esc(t.id)}')">Edit</button>
+                <button class="btn btn-compact ${toggleClass}" onclick="toggleTunnelEnabled('${esc(t.id)}', ${t.enabled ? 'true' : 'false'})">${toggleLabel}</button>
+                <button class="btn btn-danger" data-tunnel-id="${esc(t.id)}" data-tunnel-name="${esc(t.name)}" onclick="deleteTunnel(this.dataset.tunnelId,this.dataset.tunnelName)">Delete</button>
+              </td>
+            </tr>`;
+          }).join('');
+          return `<div class="group">
+            <h3>${esc(agentName[id] || ('Unknown Agent: ' + id))}</h3>
+            <table>
+              <thead><tr><th>Name</th><th>Type</th><th>Public Port</th><th>Local Service</th><th>Actions</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+        }).join('');
+    }
+
+    function openEditTunnel(id) {
+      const t = TUNNELS.find(x => x.id === id);
+      if (!t) return;
+      document.getElementById('editTunnelId').value = t.id;
+      document.getElementById('editName').value = t.name;
+      document.getElementById('editType').value = t.type;
+      document.getElementById('editListenPort').value = t.listenPort;
+      document.getElementById('editTargetHost').value = t.targetHost;
+      document.getElementById('editTargetPort').value = t.targetPort;
+      document.getElementById('editAgentId').value = t.agentId;
+      document.getElementById('editTunnelModal').classList.add('open');
+    }
+
+    async function saveTunnelEdit(e) {
+      e.preventDefault();
+      const form = e.target;
+      const id = form.id.value;
+      const payload = {
+        name: form.name.value,
+        type: form.type.value,
+        listenPort: form.listenPort.value,
+        targetHost: form.targetHost.value,
+        targetPort: form.targetPort.value,
+        agentId: form.agentId.value
+      };
+
+      const res = await fetch('/api/tunnels/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Update failed' }));
+        window.showToast('Error: ' + (err.error || res.status));
+        return;
+      }
+      document.getElementById('editTunnelModal').classList.remove('open');
+      await refreshData();
+    }
+
+    async function createTunnel(e) {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target));
+      const res = await fetch('/api/tunnels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (res.ok) {
+        e.target.reset();
+        await refreshData();
+      } else {
+        const err = await res.json().catch(() => ({ error: 'Request failed' }));
+        window.showToast('Error: ' + (err.error || res.status));
+      }
+    }
+
+    async function deleteTunnel(id, name) {
+      if (!confirm("Delete tunnel '" + name + "'?")) return;
+      const res = await fetch('/api/tunnels/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (!res.ok) { window.showToast('Failed to delete tunnel'); return; }
+      await refreshData();
+    }
+
+    async function toggleTunnelEnabled(id, currentlyEnabled) {
+      const nextEnabled = !currentlyEnabled;
+      const res = await fetch('/api/tunnels/' + encodeURIComponent(id) + '/enabled', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Toggle failed' }));
+        window.showToast('Error: ' + (err.error || res.status));
+        return;
+      }
+      await refreshData();
+    }
+
+    async function refreshData() {
+      try {
+        const [agents, tunnels] = await Promise.all([
+          window.dashboardWsRequest('agents', {}),
+          window.dashboardWsRequest('tunnels', {}),
+        ]);
+        const renderKey = JSON.stringify({ agents: agents || [], tunnels: tunnels || [] });
+        if (renderKey === lastTunnelsRenderKey) return;
+        lastTunnelsRenderKey = renderKey;
+        AGENTS = agents;
+        TUNNELS = tunnels;
+        const createSelect = document.getElementById('agentSelect');
+        const editSelect = document.getElementById('editAgentId');
+
+        if (!agentSelectsFrozen) {
+          const createVal = createSelect ? String(createSelect.value || '') : '';
+          const editVal = editSelect ? String(editSelect.value || '') : '';
+          if (createVal !== '' || editVal !== '') {
+            agentSelectsFrozen = true;
+          }
+        }
+
+        if (!agentSelectsFrozen) {
+          updateAgentSelects();
+        }
+        renderGroups();
+      } catch (_) {}
+    }
+
+    refreshData();
+    setInterval(refreshData, 500);
+  </script>
+</body>
+</html>

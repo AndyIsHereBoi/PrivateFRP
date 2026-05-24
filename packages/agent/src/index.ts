@@ -1,93 +1,30 @@
-import fs from "fs";
-import path from "path";
-import { Agent } from "./agent";
-import { agentLog, configureAgentLogging } from "./logger";
+// PrivateFRP Agent Entry Point
 
-function loadEnvFile(fileName: string): void {
-  const candidates: string[] = [];
-  const execName = path.basename(process.execPath).toLowerCase();
+import { AgentClient } from "./client/agent-client.js";
+import { TunnelManager } from "./tunnel/tunnel-manager.js";
 
-  // When compiled, the binary location is where users expect agent.env.
-  if (!execName.startsWith("bun")) {
-    candidates.push(path.join(path.dirname(process.execPath), fileName));
-  }
+console.log("PrivateFRP Agent starting...");
 
-  // Keep cwd fallback for local runs.
-  candidates.push(path.join(process.cwd(), fileName));
+// Load configuration from environment
+const config = {
+  serverHost: process.env.SERVER_HOST || "localhost",
+  serverPort: parseInt(process.env.SERVER_PORT || "7000"),
+  agentId: process.env.AGENT_ID || "",
+  agentSecret: process.env.AGENT_SECRET || "",
+};
 
-  const envPath = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!envPath) {
-    return;
-  }
-
-  const contents = fs.readFileSync(envPath, "utf8");
-  for (const rawLine of contents.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const separator = line.indexOf("=");
-    if (separator <= 0) {
-      continue;
-    }
-
-    const key = line.slice(0, separator).trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      continue;
-    }
-
-    let value = line.slice(separator + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-}
-
-loadEnvFile("agent.env");
-configureAgentLogging(process.env.LOG_PATH ?? "./logs");
-
-const serverHost = process.env.SERVER_HOST ?? "localhost";
-const serverPort = parseInt(process.env.SERVER_PORT ?? "7000", 10);
-const agentId = process.env.AGENT_ID;
-const agentSecret = process.env.AGENT_SECRET;
-const tlsRejectUnauthorized = process.env.TLS_REJECT_UNAUTHORIZED !== "false";
-
-if (!agentId || !agentSecret) {
-  agentLog.error("[PrivateFRP Agent] AGENT_ID and AGENT_SECRET environment variables are required.");
+if (!config.agentId || !config.agentSecret) {
+  console.error("AGENT_ID and AGENT_SECRET must be set");
   process.exit(1);
 }
 
-agentLog.info("[PrivateFRP Agent] Starting...");
-agentLog.info("[PrivateFRP Agent] Build marker: reconnect-guard-v4");
-agentLog.info(`  Server : ${serverHost}:${serverPort}`);
-agentLog.info(`  Agent  : ${agentId}`);
-agentLog.info(`  TLS verify: ${tlsRejectUnauthorized}`);
+// Create tunnel manager
+const tunnelManager = new TunnelManager();
 
-const agent = new Agent({
-  serverHost,
-  serverPort,
-  agentId,
-  agentSecret,
-  tlsRejectUnauthorized,
-});
+// Create agent client
+const agentClient = new AgentClient(config, tunnelManager);
 
-agent.start();
+// Start the agent
+await agentClient.start();
 
-process.on("SIGINT", () => {
-  agentLog.info("\n[PrivateFRP Agent] Shutting down...");
-  agent.stop();
-  process.exit(0);
-});
-
-process.on("SIGTERM", () => {
-  agent.stop();
-  process.exit(0);
-});
+console.log("PrivateFRP Agent started successfully");

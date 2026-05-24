@@ -2,16 +2,21 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": ["bun"],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "types": ["bun", "node"]
+    "paths": {
+      "@privatefrp/shared": ["./packages/shared/src/index.ts"]
+    }
   },
-  "include": ["packages/**/src/**/*.ts", "packages/**/tests/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/server" },
+    { "path": "./packages/agent" }
+  ]
 }

@@ -42,9 +42,8 @@ The server is the central coordination point that manages all agents and tunnels
 - **Connection Routing**: Directing incoming client connections to the appropriate agent and target stream
 - **Authentication**: Verifying agent credentials and preventing unauthorized access
 - **Dashboard/API**: Providing a web interface and API for managing tunnels, monitoring agents, and configuring the system
-- **Database**: Persisting tunnel configurations, agent information, and traffic statistics
+- **Database**: Persisting tunnel configurations and agent information
 - **TLS Termination**: Handling TLS encryption for incoming client connections
-- **Traffic Statistics**: Collecting and storing bandwidth usage data per tunnel and per IP address
 
 The server exposes two main ports:
 - **Agent Port**: For agents to connect and authenticate (TLS)
@@ -56,7 +55,6 @@ The dashboard is a web-based management interface for administering the FRP serv
 
 - **Agent Monitoring**: Real-time view of connected agents, their health, latency, and active connections
 - **Tunnel Management**: Create, edit, and delete tunnel configurations
-- **Traffic Statistics**: View bandwidth usage and connection history
 - **Authentication**: Secure login to access the management interface
 - **Configuration Export**: Generate configuration files for agents
 
@@ -120,12 +118,12 @@ The dashboard is a web-based management interface for administering the FRP serv
 
 ## Deployment
 
-The project supports multiple deployment scenarios:
+The project is built using Bun and can be deployed in two ways:
 
-- **Server**: Can run on a VPS or cloud instance with public IP
-- **Agent**: Runs on any machine hosting services to expose (local PC, home server, etc.)
-- **Docker**: Both server and agent can run in Docker containers
-- **Standalone**: Both can run as compiled binaries
+1. **Binary Execution**: Run directly from Bun-produced binaries
+2. **Docker Container**: Run within a single Docker container
+
+By default, running the binary or container starts the agent. To start the server instead, use the `--server` flag or set the `SERVER_MODE=1` environment variable.
 
 ## Technology Stack
 
@@ -135,16 +133,16 @@ The project supports multiple deployment scenarios:
 - **Database**: SQLite for persistent storage
 - **Logging**: log4js with rolling file and console output
 
-## Shared Package
+## Shared Protocol Layer
 
-The project includes a shared package (`packages/shared`) that contains common protocol definitions used by both the server and agent:
+The project includes a shared protocol layer that contains common definitions used by both the server and agent:
 
 - **Message Types**: Constants defining all frame types (AgentHello, ServerHello, Heartbeat, ConfigPush, DialTcp, DialUdpSession, DataConnHello, UdpData, PoolHello, DialAssign, StreamOpen, StreamData, StreamClose)
 - **Type Definitions**: TypeScript interfaces for tunnel configuration, message bodies, and frame structures
 - **Frame Encoding/Decoding**: Functions for serializing and parsing the binary frame protocol
 - **Tunnel Configuration**: Shared type for tunnel definitions used across all components
 
-This shared package ensures type consistency between the server and agent without code duplication.
+This shared layer ensures type consistency between the server and agent without code duplication.
 
 ## Traffic Flow
 
@@ -212,8 +210,6 @@ Stores tunnel configurations mapping public ports to local services.
 | target_port | INTEGER | Local port to forward to |
 | agent_id | TEXT | Foreign key referencing the agent that handles this tunnel |
 | enabled | INTEGER | Whether the tunnel is active (1 = enabled, 0 = disabled) |
-| traffic_in_bytes | INTEGER | Cumulative inbound traffic in bytes |
-| traffic_out_bytes | INTEGER | Cumulative outbound traffic in bytes |
 | created_at | INTEGER | Unix timestamp of when the tunnel was created |
 
 ## Key Design Principles
@@ -224,10 +220,8 @@ Stores tunnel configurations mapping public ports to local services.
 
 3. **Reliability**: Automatic reconnection and health monitoring. Agents detect disconnections and reconnect with exponential backoff. The server tracks agent heartbeats and cleans up stale connections. Streams are properly closed when agents disconnect.
 
-4. **Simplicity**: Easy configuration and deployment. Agents are configured via environment files. The server uses a simple data directory for persistence. Docker support enables one-command deployment.
+4. **Simplicity**: Easy configuration and deployment. Components are configured via environment files. Data persistence uses a simple directory structure. Docker support enables one-command deployment.
 
 5. **Extensibility**: Support for multiple tunnel types and configurations. The system supports TCP, UDP, and combined TCP+UDP tunnels. New tunnel types can be added by extending the protocol and tunnel manager.
 
-6. **Shared Protocol Layer**: The protocol definitions are shared between the server and agent packages as a common dependency. This ensures both sides use identical message types, frame formats, and data structures without duplication.
-
-7. **Traffic Monitoring**: Built-in traffic statistics collection per tunnel and per IP address. Historical data is stored in time-bucketed rollups for reporting. The dashboard displays real-time and historical traffic data.
+6. **Unified Binary/Container**: The project is built with Bun and produces a single binary or container that can run either the agent (default) or server mode (via `--server` flag or `SERVER_MODE=1` environment variable). This simplifies deployment and distribution.
