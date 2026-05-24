@@ -3,7 +3,7 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { connect, type Socket } from 'bun';
 import { FRAME_TYPES, type AgentRuntimeConfig, type DialTcpFrame, type DialUdpSessionFrame, type TunnelRecord } from '@privatefrp/shared';
-import { decodeData, encodeData, encodeFrame, FrameParser, nowMs } from '@privatefrp/shared';
+import { decodeData, encodeData, encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
 
 type LocalTcpStream = {
   streamId: string;
@@ -130,8 +130,18 @@ export class AgentClient {
             });
           },
           data: (_s: Socket, data: unknown) => {
-            for (const frame of this.parser.push(asUint8Array(data))) {
-              void this.handleFrame(frame);
+            for (const parsed of this.parser.push(asUint8Array(data))) {
+              if (parsed.kind === 'json') {
+                void this.handleFrame(parsed.frame);
+                continue;
+              }
+              if (parsed.kind === 'stream-data') {
+                this.handleStreamData(parsed.streamId, parsed.data);
+                continue;
+              }
+              if (parsed.kind === 'udp-data') {
+                this.handleUdpData(parsed.sessionId, parsed.data);
+              }
             }
           },
           close: () => {
@@ -300,6 +310,18 @@ export class AgentClient {
     return this.pendingBytes === 0;
   }
 
+  private handleStreamData(streamId: string, data: Uint8Array): void {
+    const stream = this.tcpStreams.get(streamId);
+    if (!stream) return;
+    stream.socket.write(data);
+  }
+
+  private handleUdpData(sessionId: string, data: Uint8Array): void {
+    const session = this.udpSessions.get(sessionId);
+    if (!session) return;
+    session.socket.send(data, session.targetPort, session.targetHost);
+  }
+
   private async handleFrame(frame: { type: string; payload?: unknown; streamId?: string }): Promise<void> {
     switch (frame.type) {
       case FRAME_TYPES.SERVER_HELLO:
@@ -328,9 +350,7 @@ export class AgentClient {
       case FRAME_TYPES.STREAM_DATA: {
         const payload = frame.payload as { streamId?: string; data?: string } | undefined;
         if (!payload?.streamId || typeof payload.data !== 'string') return;
-        const stream = this.tcpStreams.get(payload.streamId);
-        if (!stream) return;
-        stream.socket.write(decodeData(payload.data));
+        this.handleStreamData(payload.streamId, decodeData(payload.data));
         return;
       }
       case FRAME_TYPES.STREAM_CLOSE: {
@@ -345,9 +365,7 @@ export class AgentClient {
       case FRAME_TYPES.UDP_DATA: {
         const payload = frame.payload as { sessionId?: string; data?: string } | undefined;
         if (!payload?.sessionId || typeof payload.data !== 'string') return;
-        const session = this.udpSessions.get(payload.sessionId);
-        if (!session) return;
-        session.socket.send(decodeData(payload.data), session.targetPort, session.targetHost);
+        this.handleUdpData(payload.sessionId, decodeData(payload.data));
         return;
       }
       default:
@@ -372,7 +390,7 @@ export class AgentClient {
         },
         data: (localSocket: Socket, data: unknown) => {
           const bytes = asUint8Array(data);
-          const ok = this.send({ type: FRAME_TYPES.STREAM_DATA, streamId: payload.streamId, payload: { streamId: payload.streamId, data: encodeData(bytes) } });
+          const ok = this.writeToServer(encodeStreamDataFrame(payload.streamId, bytes));
           if (!ok) {
             try {
               localSocket.pause?.();
@@ -400,16 +418,7 @@ export class AgentClient {
 
     const socket = dgram.createSocket('udp4');
     socket.on('message', (message: Uint8Array) => {
-      this.send({
-        type: FRAME_TYPES.UDP_DATA,
-        streamId: payload.sessionId,
-        payload: {
-          sessionId: payload.sessionId,
-          data: encodeData(message),
-          peerAddress: payload.peerAddress,
-          peerPort: payload.peerPort
-        }
-      });
+      this.writeToServer(encodeUdpDataFrame(payload.sessionId, message));
     });
     socket.bind();
     this.udpSessions.set(payload.sessionId, {

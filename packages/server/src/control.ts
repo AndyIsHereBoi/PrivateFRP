@@ -1,7 +1,7 @@
 import dgram from 'node:dgram';
 import { connect, type Socket } from 'bun';
 import { DEFAULTS, FRAME_TYPES, type AgentConfig, type AgentRecord, type DialTcpFrame, type DialUdpSessionFrame, type Frame, type StreamCloseFrame, type StreamDataFrame, type TunnelRecord } from '@privatefrp/shared';
-import { encodeData, encodeFrame, decodeData, FrameParser, nowMs } from '@privatefrp/shared';
+import { decodeData, encodeData, encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
 import type { ServerRuntimeConfig } from '@privatefrp/shared';
 import type { ServerStore } from './store';
 
@@ -383,14 +383,7 @@ export class ControlPlane {
       return;
     }
 
-    const ok = this.writeToAgent(agent, encodeFrame({
-      type: FRAME_TYPES.STREAM_DATA,
-      streamId,
-      payload: {
-        streamId,
-        data: encodeData(payload)
-      } satisfies StreamDataFrame
-    }));
+    const ok = this.writeToAgent(agent, encodeStreamDataFrame(streamId, payload));
     if (!ok) this.pauseTcpStream(state);
   }
 
@@ -415,16 +408,7 @@ export class ControlPlane {
     if (!session) return;
     const agent = session.agentId ? this.agentConnections.get(session.agentId) : null;
     if (!agent) return;
-    const ok = this.writeToAgent(agent, encodeFrame({
-      type: FRAME_TYPES.UDP_DATA,
-      streamId: sessionId,
-      payload: {
-        sessionId,
-        data: encodeData(message),
-        peerAddress: session.peerAddress,
-        peerPort: session.peerPort
-      }
-    }));
+    const ok = this.writeToAgent(agent, encodeUdpDataFrame(sessionId, message));
     void ok;
   }
 
@@ -438,8 +422,18 @@ export class ControlPlane {
     const parser = ((socket as any).__privateFrpParser as FrameParser | undefined) ?? new FrameParser();
     (socket as any).__privateFrpParser = parser;
 
-    for (const frame of parser.push(asUint8Array(data))) {
-      this.handleAgentFrame(socket, frame);
+    for (const parsed of parser.push(asUint8Array(data))) {
+      if (parsed.kind === 'json') {
+        this.handleAgentFrame(socket, parsed.frame);
+        continue;
+      }
+      if (parsed.kind === 'stream-data') {
+        this.handleAgentStreamData(parsed.streamId, parsed.data);
+        continue;
+      }
+      if (parsed.kind === 'udp-data') {
+        this.handleAgentUdpData(parsed.sessionId, parsed.data);
+      }
     }
   }
 
@@ -536,6 +530,18 @@ export class ControlPlane {
     }
   }
 
+  private handleAgentStreamData(streamId: string, data: Uint8Array): void {
+    const state = this.tcpStreams.get(streamId);
+    if (!state) return;
+    state.socket.write(data);
+  }
+
+  private handleAgentUdpData(sessionId: string, data: Uint8Array): void {
+    const session = this.udpSessions.get(sessionId);
+    if (!session) return;
+    session.socket.send(data, session.peerPort, session.peerAddress);
+  }
+
   private handleAgentFrame(socket: Socket, frame: Frame): void {
     switch (frame.type) {
       case FRAME_TYPES.AGENT_HELLO: {
@@ -610,9 +616,7 @@ export class ControlPlane {
       case FRAME_TYPES.STREAM_DATA: {
         const payload = frame.payload as { streamId?: string; data?: string } | undefined;
         if (!payload?.streamId || typeof payload.data !== 'string') return;
-        const state = this.tcpStreams.get(payload.streamId);
-        if (!state) return;
-        state.socket.write(decodeData(payload.data));
+        this.handleAgentStreamData(payload.streamId, decodeData(payload.data));
         return;
       }
       case FRAME_TYPES.STREAM_CLOSE: {
@@ -627,9 +631,7 @@ export class ControlPlane {
       case FRAME_TYPES.UDP_DATA: {
         const payload = frame.payload as { sessionId?: string; data?: string } | undefined;
         if (!payload?.sessionId || typeof payload.data !== 'string') return;
-        const session = this.udpSessions.get(payload.sessionId);
-        if (!session) return;
-        session.socket.send(decodeData(payload.data), session.peerPort, session.peerAddress);
+        this.handleAgentUdpData(payload.sessionId, decodeData(payload.data));
         return;
       }
       default:
