@@ -1,5 +1,6 @@
-import { connect, type Socket } from "bun";
+import { connect } from "bun";
 import type { AgentConfigPayload } from "@privatefrp/shared";
+import { loadTrustedCertificates, saveTrustedCertificates, validateServerCertificate } from "../utils/cert-validator.js";
 
 /**
  * Configuration for the agent client
@@ -17,7 +18,7 @@ export interface AgentClientConfig {
 export class AgentClient {
   private config: AgentClientConfig;
   private tunnelManager: any;
-  private socket: Socket | null = null;
+  private socket: any | null = null;
   private connected: boolean = false;
 
   constructor(config: AgentClientConfig, tunnelManager: any) {
@@ -58,18 +59,19 @@ export class AgentClient {
    * Connect to the server
    */
   private async connect(): Promise<void> {
-    this.socket = await connect({
+    // Get TLS socket info to extract certificate
+    const tlsSocket = await connect({
       hostname: this.config.serverHost,
       port: this.config.serverPort,
       tls: true,
       socket: {
-        open: (socket) => {
+        open: (socket: any) => {
           this.socket = socket;
         },
-        data: (_socket, chunk) => {
+        data: (_socket: any, chunk: Buffer) => {
           console.log("Received data:", chunk);
         },
-        error: (_socket, err) => {
+        error: (_socket: any, err: Error) => {
           console.error(`Socket error: ${err.message}`);
         },
         close: () => {
@@ -78,6 +80,31 @@ export class AgentClient {
         },
       },
     });
+
+    // Get the server certificate from TLS socket
+    const certInfo = tlsSocket.getPeerCertificate();
+    const serverCert = certInfo.raw ? certInfo.raw.toString('base64') : '';
+
+    if (!serverCert) {
+      console.error("Failed to retrieve server certificate");
+      throw new Error("No certificate received from server");
+    }
+
+    // Validate the certificate
+    const isValid = await validateServerCertificate(serverCert);
+
+    if (!isValid) {
+      console.error("Server certificate does not match trusted certificate");
+      console.log("This could indicate a man-in-the-middle attack or server certificate change");
+      process.exit(1);
+    }
+
+    // If no trusted cert was stored, save this one
+    const existingTrusted = await loadTrustedCertificates();
+    if (!existingTrusted) {
+      await saveTrustedCertificates(serverCert);
+      console.log(`Server certificate saved to trusted certificates`);
+    }
   }
 
   /**

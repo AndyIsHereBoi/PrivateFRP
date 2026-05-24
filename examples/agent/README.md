@@ -52,7 +52,20 @@ This example runs a single PrivateFRP agent. The agent:
 - Connects to the server over TLS on `SERVER_HOST:SERVER_PORT`
 - Receives tunnel configurations dynamically from the server
 - Creates TCP/UDP tunnels as configured
-- Stores data in `/app/data` inside the container
+- Stores data in `./data` directory relative to this compose file
+
+## Data Persistence
+
+Data is stored in the `./data` directory. This includes:
+
+- SQLite database (`privatefrp.db`)
+- Trusted server certificate (`trusted-certs.json`) - saved on first connection
+
+## TLS Certificate Validation
+
+On first connection to the server, the agent saves the server's certificate to `./data/trusted-certs.json`. On subsequent connections, it validates that the server's certificate matches.
+
+If the certificate doesn't match (indicating a potential man-in-the-middle attack or server certificate change), the agent will exit with an error and will not connect.
 
 ## Creating Tunnels
 
@@ -61,13 +74,6 @@ Once the agent is running and connected to the server, create tunnels via the se
 1. Access the dashboard at `http://SERVER_HOST:DASHBOARD_PORT`
 2. Log in with your credentials
 3. Create TCP or UDP tunnels that will be forwarded through this agent
-
-## Data Persistence
-
-Data is stored in the `./data` directory relative to this compose file. This includes:
-
-- SQLite database (`privatefrp.db`)
-- TLS certificates (auto-generated if not present)
 
 ## Troubleshooting
 

@@ -8,5 +8,6 @@ services:
       - AGENT_ID=${AGENT_ID}
       - AGENT_SECRET=${AGENT_SECRET}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - TLS_REJECT_UNAUTHORIZED=true
     volumes:
-      - ./data:/app/data
+      - ./data:./data

@@ -48,7 +48,14 @@ This example runs a single PrivateFRP server. The server:
 
 - Listens for agent connections on `SERVER_PORT` (default: 7000)
 - Provides a dashboard web interface on `DASHBOARD_PORT` (default: 8089)
-- Stores data in `/app/data` inside the container
+- Stores data in `./data` directory relative to this compose file
+
+## Data Persistence
+
+Data is stored in the `./data` directory. This includes:
+
+- SQLite database (`privatefrp.db`)
+- TLS certificates (`certs/server.crt`, `certs/server.key`) - auto-generated on first run
 
 ## Accessing the Dashboard
 
@@ -60,12 +67,11 @@ http://localhost:DASHBOARD_PORT
 
 Replace `DASHBOARD_PORT` with your configured port (default: 8089).
 
-## Data Persistence
+## TLS Certificate Validation
 
-Data is stored in the `./data` directory relative to this compose file. This includes:
+On first startup, the server generates a self-signed certificate and saves it to `./data/certs/`. This certificate is used for all agent connections.
 
-- SQLite database (`privatefrp.db`)
-- TLS certificates (auto-generated if not present)
+For production use, you should replace these certificates with properly signed ones before deploying.
 
 ## Troubleshooting
 

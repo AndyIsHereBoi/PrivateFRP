@@ -138,21 +138,25 @@ Generate self-signed certificates for development:
 .\generate-certs.ps1
 ```
 
+Certificates are automatically generated and stored in `./data/certs/` on first run.
+
 ## Docker Deployment
 
 ### Using Docker Compose (Recommended)
 
-The project includes `docker-compose.yml` for easy deployment:
+Example compose files are available in the [`examples/`](examples/) directory:
+
+- **Server only**: [`examples/server/compose.yml`](examples/server/compose.yml)
+- **Agent only**: [`examples/agent/compose.yml`](examples/agent/compose.yml)
 
 ```bash
-# Build and start all services
-docker compose up --build
+# Start server
+cd examples/server
+docker compose up -d
 
-# View logs
-docker compose logs -f
-
-# Stop services
-docker compose down
+# Start agent (requires running server)
+cd examples/agent
+docker compose up -d
 ```
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for more details.

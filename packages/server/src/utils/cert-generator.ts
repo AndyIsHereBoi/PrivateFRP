@@ -11,9 +11,9 @@ export interface CertificatePair {
  * Generate a placeholder self-signed certificate (for development only)
  */
 function generatePlaceholderCert(): CertificatePair {
-  const privateKey = `-----BEGIN RSA PRIVATE KEY-----
+  const privateKey = `-----BEGIN RSA Private Key-----
 MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHmJYz51xkPbX6f4h2R9
------END RSA PRIVATE KEY-----`;
+-----END RSA Private Key-----`;
 
   const certificate = `-----BEGIN CERTIFICATE-----
 MIIDXTCCAkWgAwIBAgIJAJC1HiIAZAiUMA0GCSqGSIb3DQEBCwUAME0xCzAJBgNV
@@ -36,20 +36,43 @@ export function generateCert(): CertificatePair {
 /**
  * Load certificate from files or generate new ones if they don't exist
  */
-export function loadOrCreateCertificate(certPath: string, keyPath: string): CertificatePair {
-  // In Bun, we would use Bun.file() to read/write files
-  // For now, generate certificates each time (placeholder implementation)
+export async function loadOrCreateCertificate(certPath: string, keyPath: string): Promise<CertificatePair> {
+  // Check if certificate file exists
+  try {
+    const certContent = await Bun.file(certPath).text();
+    const keyContent = await Bun.file(keyPath).text();
+
+    if (certContent && keyContent) {
+      console.log(`Loading certificates from ${certPath}`);
+      return { cert: certContent, key: keyContent };
+    }
+  } catch (e) {
+    // File doesn't exist or can't be read, will generate new ones
+  }
+
+  // Generate and save certificates
   console.log("Generating certificates...");
-  return generateCert();
+  const { cert, key } = generateCert();
+
+  // Ensure directory exists
+  const certDir = certPath.substring(0, certPath.lastIndexOf('/'));
+  Bun.write(`${certDir}/.keep`, "");
+
+  // Save certificate files
+  Bun.write(certPath, cert);
+  Bun.write(keyPath, key);
+
+  console.log(`Certificates saved to ${certPath} and ${keyPath}`);
+
+  return { cert, key };
 }
 
 /**
  * Get default certificate paths
  */
 export function getDefaultCertPaths(): { cert: string; key: string } {
-  const home = process.env.HOME || process.env.USERPROFILE || ".";
   return {
-    cert: `${home}/.privatefrp/server.crt`,
-    key: `${home}/.privatefrp/server.key`,
+    cert: "./data/certs/server.crt",
+    key: "./data/certs/server.key",
   };
 }

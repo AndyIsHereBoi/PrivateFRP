@@ -3,17 +3,21 @@
 import { AgentServer } from "./server/agent-server.js";
 import { DashboardServer } from "./server/dashboard-server.js";
 import { Database } from "./database/index.js";
+import { loadServerConfig } from "@privatefrp/shared";
 
 console.log("PrivateFRP Server starting...");
 
-// Initialize database
-const db = new Database("./data/privatefrp.db");
+// Load configuration from environment
+const config = loadServerConfig();
+
+// Initialize database with configured path
+const db = new Database(config.databasePath);
 
 // Create agent server for handling agent connections
-const agentServer = new AgentServer(7000);
+const agentServer = new AgentServer(config.serverPort);
 
 // Create dashboard server for web interface
-const dashboardServer = new DashboardServer(db, 8089);
+const dashboardServer = new DashboardServer(db, config.dashboardPort);
 
 // Start servers
 await agentServer.start();

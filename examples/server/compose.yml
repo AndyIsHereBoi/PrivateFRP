@@ -6,5 +6,8 @@ services:
       - SERVER_PORT=${SERVER_PORT:-7000}
       - DASHBOARD_PORT=${DASHBOARD_PORT:-8089}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DATABASE_PATH=./data/privatefrp.db
+      - TLS_CERT=
+      - TLS_KEY=
     volumes:
-      - ./data:/app/data
+      - ./data:./data

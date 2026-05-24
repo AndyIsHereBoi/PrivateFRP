@@ -19,9 +19,10 @@ export class AgentServer {
   async start(): Promise<void> {
     console.log(`Agent server starting on port ${this.port}...`);
 
-    // Generate self-signed certificate if not found
-    const { generateCert } = await import("../utils/cert-generator.js");
-    const { cert, key } = generateCert();
+    // Load or generate self-signed certificate
+    const { loadOrCreateCertificate, getDefaultCertPaths } = await import("../utils/cert-generator.js");
+    const paths = getDefaultCertPaths();
+    const { cert, key } = await loadOrCreateCertificate(paths.cert, paths.key);
 
     this.server = createServer({ cert, key }, (socket) => {
       this.handleAgentConnection(socket);
@@ -58,33 +59,24 @@ export class AgentServer {
    * Handle a new agent connection
    */
   private handleAgentConnection(socket: TLSSocket): void {
-    const agentId = socket.remoteAddress + ":" + socket.remotePort;
-    console.log(`New agent connection from ${agentId}`);
+    console.log(`New agent connection from ${socket.remoteAddress}:${socket.remotePort}`);
 
-    const connection = new AgentConnection(agentId, socket);
-    this.agents.set(agentId, connection);
+    const connection = new AgentConnection(socket.remoteAddress || "unknown", socket);
+    this.agents.set(connection.id, connection);
 
     socket.onclose = () => {
-      console.log(`Agent disconnected: ${agentId}`);
-      this.agents.delete(agentId);
+      console.log(`Agent disconnected: ${connection.id}`);
+      this.agents.delete(connection.id);
     };
-  }
-
-  /**
-   * Get all connected agents
-   */
-  getAgents(): Map<string, AgentConnection> {
-    return this.agents;
   }
 }
 
 /**
- * Represents a connection to an agent
+ * Represents a connected agent
  */
 export class AgentConnection {
   public id: string;
-  public socket: TLSSocket;
-  private lastHeartbeat: number = Date.now();
+  private socket: TLSSocket;
 
   constructor(id: string, socket: TLSSocket) {
     this.id = id;
@@ -92,23 +84,18 @@ export class AgentConnection {
   }
 
   /**
-   * Update the last heartbeat time
+   * Send data to the agent
    */
-  updateHeartbeat(): void {
-    this.lastHeartbeat = Date.now();
+  send(data: Uint8Array): void {
+    if (this.socket.writable) {
+      this.socket.write(data);
+    }
   }
 
   /**
-   * Get the latency in milliseconds
+   * Close the connection
    */
-  getLatency(): number {
-    return Date.now() - this.lastHeartbeat;
-  }
-
-  /**
-   * Check if the agent is healthy (heartbeat within last 30 seconds)
-   */
-  isHealthy(): boolean {
-    return Date.now() - this.lastHeartbeat < 30000;
+  close(): void {
+    this.socket.end();
   }
 }
