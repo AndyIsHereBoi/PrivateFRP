@@ -416,6 +416,7 @@ export class ControlPlane {
     const parser = new FrameParser();
     (socket as any).__privateFrpParser = parser;
     (socket as any).__privateFrpAuthenticated = false;
+    console.log('[agent] socket opened');
   }
 
   private onAgentSocketData(socket: Socket, data: unknown): void {
@@ -551,6 +552,7 @@ export class ControlPlane {
         const agent = this.store.authenticateAgent(agentId, agentSecret);
         if (!agent) {
           writeSocket(socket, encodeFrame({ type: FRAME_TYPES.ERROR, payload: { message: 'unauthorized' } }));
+          console.warn(`[agent] auth failed ${agentId || '(missing id)'}`);
           socket.close?.();
           return;
         }

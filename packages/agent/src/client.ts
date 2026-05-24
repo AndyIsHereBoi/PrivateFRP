@@ -156,6 +156,7 @@ export class AgentClient {
           },
           error: (_s: Socket, error: Error) => {
             this.stopHeartbeat();
+            console.error('[agent] control socket error', error);
             rejectOnce(error);
           }
         }
@@ -376,6 +377,7 @@ export class AgentClient {
   private async openLocalTcpStream(payload: DialTcpFrame): Promise<void> {
     const tunnel = this.tunnels.get(payload.tunnelId);
     if (!tunnel) {
+      console.warn(`[agent] missing tunnel ${payload.tunnelId} for stream ${payload.streamId}`);
       this.send({ type: FRAME_TYPES.STREAM_CLOSE, streamId: payload.streamId, payload: { streamId: payload.streamId, reason: 'tunnel missing' } });
       return;
     }
@@ -403,6 +405,7 @@ export class AgentClient {
         close: () => {
           this.send({ type: FRAME_TYPES.STREAM_CLOSE, streamId: payload.streamId, payload: { streamId: payload.streamId, reason: 'local closed' } });
           this.tcpStreams.delete(payload.streamId);
+          console.log(`[agent] local tcp closed ${payload.streamId}`);
         },
         error: (_socket: Socket, error: Error) => {
           console.error('[agent] local tcp error', error);
@@ -427,6 +430,7 @@ export class AgentClient {
       targetHost: payload.targetHost,
       targetPort: payload.targetPort
     });
+    console.log(`[agent] udp session ${payload.sessionId} -> ${payload.targetHost}:${payload.targetPort}`);
   }
 
   private cleanupAllStreams(): void {
@@ -447,5 +451,6 @@ export class AgentClient {
       }
     }
     this.udpSessions.clear();
+    console.log('[agent] cleaned up all streams');
   }
 }
