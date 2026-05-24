@@ -10,4 +10,4 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - TLS_REJECT_UNAUTHORIZED=true
     volumes:
-      - ./data:./data
+      - ./data:/app/data

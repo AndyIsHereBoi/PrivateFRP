@@ -13,9 +13,7 @@ services:
       - DASHBOARD_PORT=8089
       - LOG_LEVEL=info
     volumes:
-      - server-data:/data
-    networks:
-      - privatefrp-network
+      - ./data:/app/data
 
   agent:
     build:
@@ -29,14 +27,5 @@ services:
       - AGENT_ID=agent-1
       - AGENT_SECRET=your-secret-here
       - LOG_LEVEL=info
-    networks:
-      - privatefrp-network
     depends_on:
       - server
-
-networks:
-  privatefrp-network:
-    driver: bridge
-
-volumes:
-  server-data:

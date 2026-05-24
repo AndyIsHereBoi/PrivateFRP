@@ -10,4 +10,4 @@ services:
       - TLS_CERT=
       - TLS_KEY=
     volumes:
-      - ./data:./data
+      - ./data:/app/data
