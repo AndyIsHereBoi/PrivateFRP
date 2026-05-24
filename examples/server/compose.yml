@@ -3,7 +3,7 @@ services:
     image: ghcr.io/andyishereboi/privatefrp-server:latest
     network_mode: host
     env_file:
-      - ./env.example
+      - ./server.env
     volumes:
       - ./data:/app/data
       - ./data/certs:/app/certs:ro

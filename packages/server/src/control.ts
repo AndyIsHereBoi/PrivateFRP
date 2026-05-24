@@ -60,6 +60,7 @@ export class ControlPlane {
   private readonly udpSessions = new Map<string, UdpSessionState>();
   private readonly tcpListeners = new Map<string, any>();
   private readonly udpListeners = new Map<string, any>();
+  private agentListener: any = null;
   private agentTlsCert = '';
   private agentTlsKey = '';
 
@@ -73,8 +74,7 @@ export class ControlPlane {
   async start(): Promise<void> {
     this.agentTlsCert = await Bun.file(this.config.tlsCertPath).text();
     this.agentTlsKey = await Bun.file(this.config.tlsKeyPath).text();
-
-    Bun.listen({
+    this.agentListener = Bun.listen({
       hostname: this.config.host,
       port: this.config.agentPort,
       tls: {
@@ -92,6 +92,35 @@ export class ControlPlane {
     });
 
     await this.refreshTunnelListeners();
+  }
+
+  async stop(): Promise<void> {
+    try {
+      // Close agent listener
+      try {
+        this.agentListener?.close?.();
+      } catch {}
+
+      // Close tcp listeners
+      for (const listener of this.tcpListeners.values()) {
+        try { listener.close?.(); } catch {}
+      }
+      this.tcpListeners.clear();
+
+      // Close udp listeners
+      for (const s of this.udpListeners.values()) {
+        try { s.close?.(); } catch {}
+      }
+      this.udpListeners.clear();
+
+      // Close any agent sockets
+      for (const state of this.agentConnections.values()) {
+        try { state.socket.close?.(); } catch {}
+      }
+      this.agentConnections.clear();
+    } catch (err) {
+      console.error('[control] error during stop', err);
+    }
   }
 
   getAgents(): ReturnType<ServerStore['listAgents']> {

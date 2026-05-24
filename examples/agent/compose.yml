@@ -2,7 +2,7 @@ services:
   privatefrp-agent:
     image: ghcr.io/andyishereboi/privatefrp-agent:latest
     env_file:
-      - ./env.example
+      - ./agent.env
     volumes:
       - ./data:/app/data
     restart: unless-stopped

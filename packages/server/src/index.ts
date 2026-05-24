@@ -63,4 +63,18 @@ export async function startServer(): Promise<void> {
 
   globalThis.console.log(`[server] agent tls control plane on ${config.host}:${config.agentPort}`);
   globalThis.console.log(`[server] dashboard http on ${config.host}:${config.dashboardPort}`);
+  const shutdown = async (signal: string) => {
+    try {
+      globalThis.console.log(`[server] received ${signal}, shutting down...`);
+      await control.stop();
+      dashboard.stop();
+      process.exit(0);
+    } catch (err) {
+      console.error('[server] error during shutdown', err);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }

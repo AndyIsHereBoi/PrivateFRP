@@ -42,6 +42,18 @@ export class DashboardServer {
     console.log(`[dashboard] http://${this.config.host}:${this.config.dashboardPort}`);
   }
 
+  stop(): void {
+    try {
+      this.server?.stop?.();
+    } catch (err) {
+      console.error('[dashboard] error stopping server', err);
+    }
+    for (const s of this.sockets) {
+      try { s.close?.(); } catch {}
+    }
+    this.sockets.clear();
+  }
+
   notify(): void {
     const payload = JSON.stringify({ reqId: 'broadcast', ok: true, data: { refreshedAt: Date.now() } });
     for (const socket of this.sockets) {
