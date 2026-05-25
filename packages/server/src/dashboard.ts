@@ -162,6 +162,11 @@ export class DashboardServer {
       this.control.deleteTunnel(tunnelId);
       return jsonResponse({ ok: true });
     }
+    if (url.pathname.match(/^\/api\/tunnels\/[^/]+$/) && req.method === 'DELETE') {
+      const tunnelId = url.pathname.split('/')[3] || '';
+      this.control.deleteTunnel(tunnelId);
+      return jsonResponse({ ok: true });
+    }
 
     return jsonResponse({ error: 'not found' }, { status: 404 });
   }

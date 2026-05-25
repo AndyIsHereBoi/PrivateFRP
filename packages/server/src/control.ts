@@ -198,6 +198,14 @@ export class ControlPlane {
     for (const tunnel of tunnels) {
       if (!tunnel.enabled) continue;
       activeIds.add(tunnel.id);
+      
+      // Only create listeners if agent is connected
+      const agent = tunnel.agentId ? this.agentConnections.get(tunnel.agentId) : null;
+      if (!agent && tunnel.agentId) {
+        console.log(`[tunnel] skipping ${tunnel.name} - agent not connected`);
+        continue;
+      }
+      
       if (tunnel.type === 'tcp' || tunnel.type === 'tcp+udp') {
         this.ensureTcpListener(tunnel);
       }
@@ -208,6 +216,7 @@ export class ControlPlane {
 
     for (const [tunnelId, listener] of this.tcpListeners) {
       if (!activeIds.has(tunnelId)) {
+        console.log(`[tunnel] stopping tcp listener on ${this.config.publicHost}:${listener.port ?? '?'} for tunnel ${tunnelId}`);
         listener.stop?.(true);
         this.tcpListeners.delete(tunnelId);
         this.closeTunnelSessions(tunnelId, 'tunnel disabled');
@@ -215,6 +224,7 @@ export class ControlPlane {
     }
     for (const [tunnelId, listener] of this.udpListeners) {
       if (!activeIds.has(tunnelId)) {
+        console.log(`[tunnel] stopping udp listener on ${this.config.publicHost}:${listener.port ?? '?'} for tunnel ${tunnelId}`);
         listener.close();
         this.udpListeners.delete(tunnelId);
         this.closeTunnelSessions(tunnelId, 'tunnel disabled');
@@ -408,7 +418,7 @@ export class ControlPlane {
     const parser = new FrameParser();
     (socket as any).__privateFrpParser = parser;
     (socket as any).__privateFrpAuthenticated = false;
-    console.log('[agent] socket opened');
+    console.log(`[agent] connection from ${String((socket as any).remoteAddress ?? 'unknown')}`);
   }
 
   private onAgentSocketData(socket: Socket, data: unknown): void {
@@ -575,7 +585,7 @@ export class ControlPlane {
         }));
         this.pushConfigToAgent(agent.id);
         this.broadcastDashboard();
-        console.log(`[agent] connected ${agent.id} (${agent.name})`);
+        console.log(`[agent] connected ${agent.id} (${agent.name}) - ${String((socket as any).remoteAddress ?? 'unknown')}`);
         return;
       }
       case FRAME_TYPES.HEARTBEAT: {
@@ -635,7 +645,8 @@ export class ControlPlane {
       type: FRAME_TYPES.CONFIG_PUSH,
       payload: config
     }));
-    console.log(`[agent] config push ${agentId} (${tunnels.length} tunnels)`);
+    const tunnelNames = tunnels.map(t => `${t.name}:${t.listenPort}`).join(', ');
+    console.log(`[agent] config push ${agentId} (${tunnels.length} tunnels): [${tunnelNames}]`);
   }
 
   private pushConfigToAllAgents(): void {
@@ -661,7 +672,7 @@ export class ControlPlane {
     }
     this.agentConnections.delete(agentId);
     this.store.setAgentConnections(agentId, 0);
-    console.log(`[agent] disconnected ${agentId}: ${reason}`);
+    console.log(`[agent] disconnected ${agentId} (${reason})`);
     this.broadcastDashboard();
   }
 }
