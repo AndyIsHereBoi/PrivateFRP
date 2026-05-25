@@ -9,6 +9,11 @@ COPY web ./web
 
 RUN bun install
 
+ARG BUILD_COMMIT=unknown
+ARG BUILD_VERSION=unknown
+ENV BUILD_COMMIT=$BUILD_COMMIT
+ENV BUILD_VERSION=$BUILD_VERSION
+
 ENV SERVER_MODE=1
 # Install openssl so fallback cert generation works in minimal base images
 ## Do not install external packages in the image; rely on project dependencies.

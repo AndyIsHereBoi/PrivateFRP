@@ -20,6 +20,7 @@ export async function startServer(): Promise<void> {
   await control.start();
   dashboard.start();
 
+  globalThis.console.log(`[server] build ${process.env.BUILD_VERSION ?? 'dev'} (${process.env.BUILD_COMMIT ?? 'unknown'})`);
   globalThis.console.log(`[server] agent control plane on ${config.host}:${config.agentPort}`);
   globalThis.console.log(`[server] dashboard http on ${config.host}:${config.dashboardPort}`);
   const shutdown = async (signal: string) => {

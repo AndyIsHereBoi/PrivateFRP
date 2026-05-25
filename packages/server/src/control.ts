@@ -193,24 +193,23 @@ export class ControlPlane {
 
   async refreshTunnelListeners(): Promise<void> {
     const tunnels = this.store.listTunnels();
+    const tunnelsById = new Map(tunnels.map(t => [t.id, t]));
     const activeIds = new Set<string>();
 
     for (const tunnel of tunnels) {
       if (!tunnel.enabled) continue;
-      activeIds.add(tunnel.id);
-      
-      // Only create listeners if agent is connected
-      const agent = tunnel.agentId ? this.agentConnections.get(tunnel.agentId) : null;
-      if (!agent && tunnel.agentId) {
-        console.log(`[tunnel] skipping ${tunnel.name} (agent: ${tunnel.agentId}) - agent not connected`);
-        continue;
-      }
-      // Also skip if no agent is assigned
       if (!tunnel.agentId) {
         console.log(`[tunnel] skipping ${tunnel.name} - no agent assigned`);
         continue;
       }
-      
+      const agent = this.agentConnections.get(tunnel.agentId);
+      if (!agent) {
+        console.log(`[tunnel] skipping ${tunnel.name} (agent: ${tunnel.agentId}) - agent not connected`);
+        continue;
+      }
+
+      activeIds.add(tunnel.id);
+
       if (tunnel.type === 'tcp' || tunnel.type === 'tcp+udp') {
         this.ensureTcpListener(tunnel);
       }
@@ -221,7 +220,8 @@ export class ControlPlane {
 
     for (const [tunnelId, listener] of this.tcpListeners) {
       if (!activeIds.has(tunnelId)) {
-        console.log(`[tunnel] stopping tcp listener on ${this.config.publicHost}:${listener.port ?? '?'} for tunnel ${tunnelId}`);
+        const name = tunnelsById.get(tunnelId)?.name ?? tunnelId;
+        console.log(`[tcp] stopping listener on ${this.config.publicHost}:${listener.port ?? '?'} for ${name}`);
         listener.stop?.(true);
         this.tcpListeners.delete(tunnelId);
         this.closeTunnelSessions(tunnelId, 'tunnel disabled');
@@ -229,7 +229,8 @@ export class ControlPlane {
     }
     for (const [tunnelId, listener] of this.udpListeners) {
       if (!activeIds.has(tunnelId)) {
-        console.log(`[tunnel] stopping udp listener on ${this.config.publicHost}:${listener.port ?? '?'} for tunnel ${tunnelId}`);
+        const name = tunnelsById.get(tunnelId)?.name ?? tunnelId;
+        console.log(`[udp] stopping listener on ${this.config.publicHost}:${listener.port ?? '?'} for ${name}`);
         listener.close();
         this.udpListeners.delete(tunnelId);
         this.closeTunnelSessions(tunnelId, 'tunnel disabled');

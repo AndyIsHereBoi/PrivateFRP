@@ -47,6 +47,8 @@ jobs:
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           SHORT=$(git rev-parse --short HEAD)
           docker buildx build --file "${{ matrix.dockerfile }}" \
+            --build-arg "BUILD_COMMIT=${SHORT}" \
+            --build-arg "BUILD_VERSION=${{ env.RELEASE_NUMBER }}" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}" \
             --push .
 

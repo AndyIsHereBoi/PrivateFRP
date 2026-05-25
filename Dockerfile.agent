@@ -9,4 +9,9 @@ COPY web ./web
 
 RUN bun install
 
+ARG BUILD_COMMIT=unknown
+ARG BUILD_VERSION=unknown
+ENV BUILD_COMMIT=$BUILD_COMMIT
+ENV BUILD_VERSION=$BUILD_VERSION
+
 CMD ["bun", "run", "packages/agent/src/cli.ts"]
