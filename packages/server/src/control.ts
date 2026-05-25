@@ -380,6 +380,8 @@ export class ControlPlane {
     };
     this.tcpStreams.set(streamId, state);
     socket.__privateFrpStreamId = streamId;
+    // Pause external client until agent data socket connects, so we don't drop the Upgrade request
+    try { socket.pause?.(); } catch {}
 
     this.writeToAgent(agent, encodeFrame({
       type: FRAME_TYPES.DIAL_TCP,
@@ -457,6 +459,9 @@ export class ControlPlane {
       if (remaining.length > 0) {
         writeSocket(state.socket, remaining);
       }
+
+      // Resume external client now that data socket is linked
+      try { state.socket.resume?.(); } catch {}
     } else {
       // Raw tunnel data from agent → write to external client (Bun handles buffering)
       const state = this.tcpStreams.get(con.socket.__dataStreamId);
