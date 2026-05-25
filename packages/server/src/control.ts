@@ -450,6 +450,7 @@ export class ControlPlane {
       }
 
       console.log(`[data] stream ${streamId} established`);
+      socket.setNoDelay(true);
 
       // Connect the data socket to the external client
       state.dataSocket = socket;

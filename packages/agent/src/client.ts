@@ -308,6 +308,7 @@ export class AgentClient {
           new DataView(header.buffer).setUint16(0, idBytes.length, false);
           header.set(idBytes, 2);
           ds.write(header);
+          ds.setNoDelay(true);
 
           // Now connect to the local service
           const localSocket = connect({
@@ -316,6 +317,7 @@ export class AgentClient {
             socket: {
               open: (ls: Socket) => {
                 console.log(`[agent] local connected ${payload.streamId}`);
+                ls.setNoDelay(true);
                 this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: ls });
                 // Pipe: data socket ↔ local socket
                 (ds as any).__local = ls;
