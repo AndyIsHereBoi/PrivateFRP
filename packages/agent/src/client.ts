@@ -379,6 +379,7 @@ export class AgentClient {
       localSocket.on('close', () => {
         console.log(`[agent] local closed ${payload.streamId}`);
         this.tcpStreams.delete(payload.streamId);
+        try { dataSocket.destroy(); } catch {}
       });
     });
 
@@ -388,6 +389,12 @@ export class AgentClient {
 
     dataSocket.on('close', () => {
       console.log(`[agent] data socket closed ${payload.streamId}`);
+      // localSocket is captured in the connect callback closure —
+      // destroy it via the tcpStreams entry to break the reference cycle.
+      const stream = this.tcpStreams.get(payload.streamId);
+      if (stream?.socket) {
+        try { stream.socket.destroy(); } catch {}
+      }
       this.tcpStreams.delete(payload.streamId);
     });
   }

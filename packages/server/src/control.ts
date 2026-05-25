@@ -170,13 +170,15 @@ export class ControlPlane {
         });
         dataSocket.on('end', () => { if (!state.socket.destroyed) state.socket.end(); });
 
-        // Cleanup when either side closes
+        // Cleanup when either side closes — destroy peer to break reference cycle
         dataSocket.on('close', () => {
           console.log(`[data] stream ${streamId} closed by agent`);
+          try { state.socket.destroy(); } catch {}
           this.tcpStreams.delete(streamId);
         });
         state.socket.on('close', () => {
           console.log(`[tunnel] client disconnected ${state!.tunnelId}`);
+          try { dataSocket.destroy(); } catch {}
           this.tcpStreams.delete(streamId);
         });
       };
