@@ -320,6 +320,7 @@ export class AgentClient {
         open: (localSocket: Socket) => {
           this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
           this.send({ type: FRAME_TYPES.STREAM_OPEN, streamId: payload.streamId, payload: { streamId: payload.streamId } });
+          console.log(`[agent] local tcp open ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
         },
         data: (localSocket: Socket, data: unknown) => {
           const bytes = asUint8Array(data);
@@ -343,7 +344,10 @@ export class AgentClient {
         }
       }
     });
-    void socket;
+    socket.catch((err: Error) => {
+      console.error(`[agent] local tcp connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
+      this.send({ type: FRAME_TYPES.STREAM_CLOSE, streamId: payload.streamId, payload: { streamId: payload.streamId, reason: 'connect refused' } });
+    });
   }
 
   private openLocalUdpSession(payload: DialUdpSessionFrame): void {
