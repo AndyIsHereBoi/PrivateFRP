@@ -323,25 +323,66 @@ export class AgentClient {
                 (ds as any).__local = ls;
                 (ls as any).__remote = ds;
                 // Flush any buffered data from server
-                const pending = (ds as any).__pendingBuf as Uint8Array[] | undefined;
-                if (pending) {
-                  for (const buf of pending) {
-                    ls.write(buf);
+                  const pending = (ds as any).__pendingBuf as Uint8Array[] | undefined;
+                  if (pending && pending.length > 0) {
+                    for (const buf of pending) {
+                      const written = writeSocket(ls, buf);
+                      if (written < 0) {
+                        try { ds.end?.(); } catch {}
+                        break;
+                      }
+                      if (written < buf.length) {
+                        // store remainder on ds and pause ds
+                        (ds as any).__pendingLocal = (ds as any).__pendingLocal ?? [];
+                        (ds as any).__pendingLocal.push(buf.subarray(written));
+                        try { ds.pause?.(); } catch {}
+                        break;
+                      }
+                    }
+                    (ds as any).__pendingBuf = [];
                   }
-                  (ds as any).__pendingBuf = [];
-                }
               },
               data: (_ls: Socket, data: unknown) => {
-                const bytes = asUint8Array(data);
-                if (bytes.byteLength === 0) return;
-                ds.write(bytes);
+                  const bytes = asUint8Array(data);
+                  if (bytes.byteLength === 0) return;
+                  // Write to server data socket and handle partial writes
+                  const written = writeSocket(ds, bytes);
+                  if (written < 0) {
+                    try { _ls.end?.(); } catch {}
+                    return;
+                  }
+                  if (written < bytes.byteLength) {
+                    (ds as any).__pendingToServer = (ds as any).__pendingToServer ?? [];
+                    (ds as any).__pendingToServer.push(bytes.subarray(written));
+                    try { _ls.pause?.(); } catch {}
+                    return;
+                  }
               },
               close: () => {
                 console.log(`[agent] local closed ${payload.streamId}`);
                 this.tcpStreams.delete(payload.streamId);
                 try { ds.end?.(); } catch {}
               },
-              drain: () => { /* noop */ },
+              drain: (ls: Socket) => {
+                // Attempt to flush any server->local pending bytes stored on ds
+                const pendingLocal = (ds as any).__pendingLocal as Uint8Array[] | undefined;
+                if (pendingLocal && pendingLocal.length > 0) {
+                  while (pendingLocal.length > 0) {
+                    const chunk = pendingLocal[0]!;
+                    const wrote = writeSocket(ls, chunk);
+                    if (wrote < 0) {
+                      try { ds.end?.(); } catch {}
+                      return;
+                    }
+                    if (wrote < chunk.length) {
+                      pendingLocal[0] = chunk.subarray(wrote);
+                      return;
+                    }
+                    pendingLocal.shift();
+                  }
+                }
+                try { ds.resume?.(); } catch {}
+              },
               error: (_ls: Socket, error: Error) => {
                 console.error('[agent] local tcp error', error);
               }
@@ -361,7 +402,18 @@ export class AgentClient {
           }
           const bytes = asUint8Array(data);
           if (bytes.byteLength === 0) return;
-          local.write(bytes);
+          // Write to local socket with partial-write handling
+          const written = writeSocket(local, bytes);
+          if (written < 0) {
+            try { ds.end?.(); } catch {}
+            return;
+          }
+          if (written < bytes.byteLength) {
+            (ds as any).__pendingLocal = (ds as any).__pendingLocal ?? [];
+            (ds as any).__pendingLocal.push(bytes.subarray(written));
+            try { ds.pause?.(); } catch {}
+            return;
+          }
         },
         close: (s: Socket) => {
           console.log(`[agent] data socket closed ${payload.streamId}`);
@@ -369,7 +421,27 @@ export class AgentClient {
           this.tcpStreams.delete(payload.streamId);
           try { local?.end?.(); } catch {}
         },
-        drain: () => { /* noop */ },
+        drain: (s: Socket) => {
+          // flush pending bytes queued from local -> server direction
+          const pendingToServer = (s as any).__pendingToServer as Uint8Array[] | undefined;
+          if (pendingToServer && pendingToServer.length > 0) {
+            while (pendingToServer.length > 0) {
+              const chunk = pendingToServer[0]!;
+              const wrote = writeSocket(s, chunk);
+              if (wrote < 0) {
+                try { (s as any).__local?.end?.(); } catch {}
+                return;
+              }
+              if (wrote < chunk.length) {
+                pendingToServer[0] = chunk.subarray(wrote);
+                return;
+              }
+              pendingToServer.shift();
+            }
+          }
+          // resume local socket if it was paused due to backpressure to server
+          try { (s as any).__local?.resume?.(); } catch {}
+        },
         error: (_ds: Socket, error: Error) => {
           console.error('[agent] data socket error', error);
         }
