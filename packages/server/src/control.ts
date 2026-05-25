@@ -391,19 +391,6 @@ export class ControlPlane {
     }
 
     const payload = asUint8Array(data);
-    if (!state.open) {
-      socket.end?.();
-      this.tcpStreams.delete(streamId);
-      const closingAgent = this.agentConnections.get(state.agentId);
-      if (closingAgent) {
-        this.writeToAgent(closingAgent, encodeFrame({
-          type: FRAME_TYPES.STREAM_CLOSE,
-          streamId,
-          payload: { streamId, reason: 'stream not open' } satisfies StreamCloseFrame
-        }));
-      }
-      return;
-    }
 
     const ok = this.writeToAgent(agent, encodeStreamDataFrame(streamId, payload));
     if (!ok) this.pauseTcpStream(state);
