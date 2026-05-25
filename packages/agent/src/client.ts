@@ -334,20 +334,14 @@ export class AgentClient {
               data: (_ls: Socket, data: unknown) => {
                 const bytes = asUint8Array(data);
                 if (bytes.byteLength === 0) return;
-                const n = ds.write(bytes);
-                if (n < 0 || (n >= 0 && n < bytes.byteLength)) {
-                  try { _ls.pause?.(); } catch {}
-                }
+                ds.write(bytes);
               },
               close: () => {
                 console.log(`[agent] local closed ${payload.streamId}`);
                 this.tcpStreams.delete(payload.streamId);
                 try { ds.end?.(); } catch {}
               },
-              drain: () => {
-                // Local socket send buffer cleared — resume data socket
-                try { ds.resume?.(); } catch {}
-              },
+              drain: () => { /* noop */ },
               error: (_ls: Socket, error: Error) => {
                 console.error('[agent] local tcp error', error);
               }
@@ -367,10 +361,7 @@ export class AgentClient {
           }
           const bytes = asUint8Array(data);
           if (bytes.byteLength === 0) return;
-          const n = local.write(bytes);
-          if (n < 0 || (n >= 0 && n < bytes.byteLength)) {
-            try { ds.pause?.(); } catch {}
-          }
+          local.write(bytes);
         },
         close: (s: Socket) => {
           console.log(`[agent] data socket closed ${payload.streamId}`);
@@ -378,13 +369,7 @@ export class AgentClient {
           this.tcpStreams.delete(payload.streamId);
           try { local?.end?.(); } catch {}
         },
-        drain: (s: Socket) => {
-          // Data socket send buffer cleared — resume local socket if paused
-          const local = (s as any).__local as Socket | undefined;
-          if (local) {
-            try { local.resume?.(); } catch {}
-          }
-        },
+        drain: () => { /* noop */ },
         error: (_ds: Socket, error: Error) => {
           console.error('[agent] data socket error', error);
         }
