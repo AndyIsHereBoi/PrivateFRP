@@ -128,9 +128,9 @@ export class ControlPlane {
       const live = this.agentConnections.get(agent.id);
       return {
         ...agent,
-        remoteAddress: live?.remoteAddress ?? agent.remoteAddress,
-        lastHeartbeat: live?.lastHeartbeat ?? agent.lastHeartbeat,
-        latencyMs: live?.lastLatency ?? agent.latencyMs,
+        remoteAddress: live?.remoteAddress ?? null,
+        lastHeartbeat: live?.lastHeartbeat ?? null,
+        latencyMs: live?.lastLatency ?? null,
         activeConnections: agent.activeConnections,
         connected: Boolean(live)
       };
@@ -202,7 +202,7 @@ export class ControlPlane {
       // Only create listeners if agent is connected
       const agent = tunnel.agentId ? this.agentConnections.get(tunnel.agentId) : null;
       if (!agent && tunnel.agentId) {
-        console.log(`[tunnel] skipping ${tunnel.name} - agent not connected`);
+        console.log(`[tunnel] skipping ${tunnel.name} (agent: ${tunnel.agentId}) - agent not connected`);
         continue;
       }
       
@@ -261,6 +261,13 @@ export class ControlPlane {
   }
 
   private ensureTcpListener(tunnel: TunnelRecord): void {
+    // Check if agent is connected before creating or keeping listener
+    const agent = tunnel.agentId ? this.agentConnections.get(tunnel.agentId) : null;
+    if (!agent && tunnel.agentId) {
+      console.log(`[tunnel] skipping ${tunnel.name} - agent not connected`);
+      return;
+    }
+    
     const existing = this.tcpListeners.get(tunnel.id);
     if (existing) return;
 
@@ -279,6 +286,13 @@ export class ControlPlane {
   }
 
   private ensureUdpListener(tunnel: TunnelRecord): void {
+    // Check if agent is connected before creating or keeping listener
+    const agent = tunnel.agentId ? this.agentConnections.get(tunnel.agentId) : null;
+    if (!agent && tunnel.agentId) {
+      console.log(`[tunnel] skipping ${tunnel.name} - agent not connected`);
+      return;
+    }
+    
     const existing = this.udpListeners.get(tunnel.id);
     if (existing) return;
 
@@ -672,7 +686,11 @@ export class ControlPlane {
     }
     this.agentConnections.delete(agentId);
     this.store.setAgentConnections(agentId, 0);
+    // Clear latency and IP when agent disconnects
+    this.store.touchAgent(agentId, nowMs(), null, null);
     console.log(`[agent] disconnected ${agentId} (${reason})`);
+    // Refresh listeners since no agent is connected anymore
+    void this.refreshTunnelListeners();
     this.broadcastDashboard();
   }
 }
