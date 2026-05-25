@@ -1,4 +1,4 @@
-name: Release Images
+name: Release
 
 on:
   workflow_dispatch:
@@ -41,11 +41,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Show checked-out commit
+        shell: bash
+        run: |
+          echo "HEAD:           $(git rev-parse HEAD)"
+          echo "HEAD short:     $(git rev-parse --short HEAD)"
+          echo "HEAD subject:   $(git log -1 --pretty=%s)"
+          echo "Default branch: ${DEFAULT_BRANCH}"
+
       - name: Build and push image (buildx)
         shell: bash
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           SHORT=$(git rev-parse --short HEAD)
+          echo "Building ${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }} from commit ${SHORT}"
           docker buildx build --file "${{ matrix.dockerfile }}" \
             --build-arg "BUILD_COMMIT=${SHORT}" \
             --build-arg "BUILD_VERSION=${{ env.RELEASE_NUMBER }}" \
@@ -53,7 +62,7 @@ jobs:
             --push .
 
   release:
-    name: Create draft release
+    name: Create release
     runs-on: ubuntu-latest
     needs: [docker-images]
 
