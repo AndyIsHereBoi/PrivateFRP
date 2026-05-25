@@ -277,6 +277,7 @@ export class AgentClient {
         if (stream?.socket) {
           try {
             stream.socket.destroy();
+            stream.socket.removeAllListeners();
           } catch { /* ignore */ }
         }
         this.tcpStreams.delete(payload.streamId);
@@ -332,7 +333,7 @@ export class AgentClient {
         console.log(`[agent] local connected ${payload.streamId}`);
         this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
 
-        // Remove the early-data handler — explicit relay takes over now
+        // Remove the early-data handler — async relay takes over now
         dataSocket.removeListener('data', onEarlyServerData);
 
         // Flush buffered server data first
@@ -343,32 +344,12 @@ export class AgentClient {
           prePipeFromServer.length = 0;
         }
 
-        // Bidirectional relay with backpressure (playit equivalent:
-        // tokio read+write_all in a loop — no extra buffers).
-        //
-        // dataSocket → localSocket
-        let dsDraining = false;
-        dataSocket.on('data', (chunk: Buffer) => {
-          if (localSocket.destroyed) return;
-          const ok = localSocket.write(chunk);
-          if (!ok && !dsDraining) { dsDraining = true; dataSocket.pause(); }
-        });
-        localSocket.on('drain', () => {
-          if (dsDraining) { dsDraining = false; dataSocket.resume(); }
-        });
-        dataSocket.on('end', () => { if (!localSocket.destroyed) localSocket.end(); });
-
-        // localSocket → dataSocket
-        let lsDraining = false;
-        localSocket.on('data', (chunk: Buffer) => {
-          if (dataSocket.destroyed) return;
-          const ok = dataSocket.write(chunk);
-          if (!ok && !lsDraining) { lsDraining = true; localSocket.pause(); }
-        });
-        dataSocket.on('drain', () => {
-          if (lsDraining) { lsDraining = false; localSocket.resume(); }
-        });
-        localSocket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
+        // Bidirectional relay: for-await read + write with drain.
+        // Exact Node.js equivalent of playit-agent's tokio read+write_all loop:
+        //   read one chunk → write_all → wait for drain → read next chunk.
+        // Only one chunk in flight at a time = bounded memory.
+        this.pipeAsync(dataSocket, localSocket);
+        this.pipeAsync(localSocket, dataSocket);
       });
 
       localSocket.on('error', (err: Error) => {
@@ -380,6 +361,8 @@ export class AgentClient {
         console.log(`[agent] local closed ${payload.streamId}`);
         this.tcpStreams.delete(payload.streamId);
         try { dataSocket.destroy(); } catch {}
+        dataSocket.removeAllListeners();
+        localSocket.removeAllListeners();
       });
     });
 
@@ -389,13 +372,13 @@ export class AgentClient {
 
     dataSocket.on('close', () => {
       console.log(`[agent] data socket closed ${payload.streamId}`);
-      // localSocket is captured in the connect callback closure —
-      // destroy it via the tcpStreams entry to break the reference cycle.
       const stream = this.tcpStreams.get(payload.streamId);
       if (stream?.socket) {
         try { stream.socket.destroy(); } catch {}
+        stream.socket.removeAllListeners();
       }
       this.tcpStreams.delete(payload.streamId);
+      dataSocket.removeAllListeners();
     });
   }
 
@@ -426,10 +409,30 @@ export class AgentClient {
     console.log(`[agent] udp session ${payload.sessionId} -> ${payload.targetHost}:${payload.targetPort}`);
   }
 
+  // Playit-agent equivalent: tokio read(buffer) + write_all(buffer).
+  // for-await reads one chunk, write() + drain waits for it to flush,
+  // then reads the next. Only one chunk in memory at a time.
+  private pipeAsync(src: net.Socket, dst: net.Socket): void {
+    void (async () => {
+      try {
+        for await (const chunk of src) {
+          if (dst.destroyed) break;
+          if (!dst.write(chunk as Buffer)) {
+            await new Promise<void>(resolve => dst.once('drain', resolve));
+          }
+        }
+      } catch {
+        // socket closed during iteration
+      }
+      try { if (!dst.destroyed) dst.end(); } catch {}
+    })();
+  }
+
   private cleanupAllStreams(): void {
     for (const stream of this.tcpStreams.values()) {
       try {
         stream.socket.destroy();
+        stream.socket.removeAllListeners();
       } catch {
         // ignore
       }
