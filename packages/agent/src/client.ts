@@ -1,4 +1,5 @@
 import dgram from 'node:dgram';
+import net from 'node:net';
 import { connect, type Socket } from 'bun';
 import { FRAME_TYPES, type AgentRuntimeConfig, type DialTcpFrame, type DialUdpSessionFrame, type TunnelRecord } from '@privatefrp/shared';
 import { encodeFrame, FrameParser, nowMs } from '@privatefrp/shared';
@@ -6,7 +7,7 @@ import { encodeFrame, FrameParser, nowMs } from '@privatefrp/shared';
 type LocalTcpStream = {
   streamId: string;
   tunnelId: string;
-  socket: Socket;
+  socket: net.Socket;
 };
 
 type LocalUdpSession = {
@@ -33,55 +34,6 @@ function writeSocket(socket: any, data: Uint8Array): number {
     return typeof result === 'number' ? result : data.byteLength;
   }
   return -1;
-}
-
-/**
- * Relay data from source to destination socket. On partial write, the unwritten
- * tail is stored as a single chunk and the source socket is PAUSED to prevent
- * unbounded buffering. Call relayDrain(dest) on the destination's drain event
- * to flush the tail and resume the source.
- */
-function relayWrite(source: any, dest: any, data: Uint8Array): void {
-  // If there's already a pending tail, append to it (shouldn't happen with
-  // proper pause/resume, but handle gracefully without unbounded growth).
-  const tail = (dest as any).__relayChunk as Uint8Array | undefined;
-  if (tail && tail.byteLength > 0) {
-    const merged = new Uint8Array(tail.byteLength + data.byteLength);
-    merged.set(tail, 0);
-    merged.set(data, tail.byteLength);
-    (dest as any).__relayChunk = merged;
-    return;
-  }
-
-  const written = writeSocket(dest, data);
-  if (written < 0) return;
-  if (written < data.byteLength) {
-    (dest as any).__relayChunk = data.subarray(written);
-    (dest as any).__relaySource = source;
-    try { source.pause?.(); } catch { /* ignore */ }
-  }
-}
-
-/** Call on the DESTINATION socket's drain event. Flushes the single pending
- *  tail chunk (if any) and resumes the source socket. */
-function relayDrain(dest: any): void {
-  const chunk = (dest as any).__relayChunk as Uint8Array | undefined;
-  if (!chunk || chunk.byteLength === 0) return;
-
-  const written = writeSocket(dest, chunk);
-  if (written < 0) {
-    (dest as any).__relayChunk = undefined;
-    return;
-  }
-  if (written < chunk.byteLength) {
-    (dest as any).__relayChunk = chunk.subarray(written);
-    return;
-  }
-
-  (dest as any).__relayChunk = undefined;
-  const source = (dest as any).__relaySource as any | undefined;
-  (dest as any).__relaySource = undefined;
-  try { source?.resume?.(); } catch { /* ignore */ }
 }
 
 const MAX_SERVER_QUEUE_BYTES = 512 * 1024;
@@ -324,7 +276,7 @@ export class AgentClient {
         const stream = this.tcpStreams.get(payload.streamId);
         if (stream?.socket) {
           try {
-            stream.socket.close?.();
+            stream.socket.destroy();
           } catch { /* ignore */ }
         }
         this.tcpStreams.delete(payload.streamId);
@@ -346,120 +298,53 @@ export class AgentClient {
     console.log(`[agent] opening data pipe ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
 
     // Connect data socket to server first, then local service.
-    // This ensures data from either direction is never silently dropped.
-    const dataPromise = connect({
-      hostname: this.config.serverHost,
+    // Uses Node.js net.Socket + pipe() — equivalent to playit-agent's tokio write_all loop.
+    const dataSocket = net.createConnection({
+      host: this.config.serverHost,
       port: this.config.dataPort,
-      socket: {
-        open: (ds: Socket) => {
-          // Send streamId header so server matches this connection to the stream
-          const idBytes = new TextEncoder().encode(payload.streamId);
-          const header = new Uint8Array(2 + idBytes.length);
-          new DataView(header.buffer).setUint16(0, idBytes.length, false);
-          header.set(idBytes, 2);
-          const written = writeSocket(ds, header);
-          if (written < header.length) {
-            // Partial write of streamId header — store remainder for drain to flush
-            (ds as any).__headerRemaining = written < 0 ? header : header.subarray(written);
-          }
-          try { ds.setNoDelay(Boolean(this.config.dataTcpNoDelay)); } catch {}
-
-          // Now connect to local service
-          const localPromise = connect({
-            hostname: tunnel.targetHost,
-            port: tunnel.targetPort,
-            socket: {
-              open: (ls: Socket) => {
-                console.log(`[agent] local connected ${payload.streamId}`);
-                try { ls.setNoDelay(Boolean(this.config.dataTcpNoDelay)); } catch {}
-                this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: ls });
-
-                // link sockets
-                (ds as any).__local = ls;
-                (ls as any).__remote = ds;
-
-                // flush any data that arrived from server before local was ready
-                const pending = (ds as any).__pendingBuf as Uint8Array | undefined;
-                if (pending) {
-                  relayWrite(ds, ls, pending);
-                  (ds as any).__pendingBuf = undefined;
-                }
-              },
-              data: (ls: Socket, data: unknown) => {
-                const bytes = asUint8Array(data);
-                if (bytes.byteLength === 0) return;
-                relayWrite(ls, ds, bytes);
-              },
-              close: () => {
-                console.log(`[agent] local closed ${payload.streamId}`);
-                this.tcpStreams.delete(payload.streamId);
-                try { ds.end?.(); } catch {}
-              },
-              drain: () => {
-                const localSock = (ds as any).__local as Socket | undefined;
-                if (localSock) relayDrain(localSock);
-              },
-              error: (_ls: Socket, error: Error) => {
-                console.error('[agent] local tcp error', error);
-              }
-            }
-          });
-          localPromise.catch((err: Error) => {
-            console.error(`[agent] local connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
-            try { ds.end?.(); } catch {}
-          });
-        },
-        data: (ds: Socket, data: unknown) => {
-          const local = (ds as any).__local as Socket | undefined;
-          if (!local) {
-            // local not ready yet; merge into a single growing buffer
-            const chunk = asUint8Array(data);
-            const prev = (ds as any).__pendingBuf as Uint8Array | undefined;
-            if (!prev) {
-              (ds as any).__pendingBuf = chunk;
-            } else {
-              const merged = new Uint8Array(prev.length + chunk.length);
-              merged.set(prev, 0);
-              merged.set(chunk, prev.length);
-              (ds as any).__pendingBuf = merged;
-            }
-            return;
-          }
-          const bytes = asUint8Array(data);
-          if (bytes.byteLength === 0) return;
-          relayWrite(ds, local, bytes);
-        },
-        close: (ds: Socket) => {
-          console.log(`[agent] data socket closed ${payload.streamId}`);
-          const local = (ds as any).__local as Socket | undefined;
-          this.tcpStreams.delete(payload.streamId);
-          try { local?.end?.(); } catch {}
-        },
-        drain: (ds: Socket) => {
-          // Flush any remaining streamId header bytes if needed
-          const headerRemaining = (ds as any).__headerRemaining as Uint8Array | undefined;
-          if (headerRemaining) {
-            const wrote = writeSocket(ds, headerRemaining);
-            if (wrote < 0) {
-              try { (ds as any).__local?.end?.(); } catch {}
-              return;
-            }
-            if (wrote < headerRemaining.length) {
-              (ds as any).__headerRemaining = headerRemaining.subarray(wrote);
-              return;
-            }
-            (ds as any).__headerRemaining = undefined;
-          }
-          // Flush pending relay tail (data from local → server direction)
-          relayDrain(ds);
-        },
-        error: (_ds: Socket, error: Error) => {
-          console.error('[agent] data socket error', error);
-        }
-      }
+      noDelay: Boolean(this.config.dataTcpNoDelay)
     });
-    dataPromise.catch((err: Error) => {
-      console.error(`[agent] data connect failed ${payload.streamId}`, err);
+
+    // Send streamId header immediately
+    const idBytes = Buffer.from(payload.streamId, 'utf8');
+    const header = Buffer.alloc(2 + idBytes.length);
+    header.writeUInt16BE(idBytes.length, 0);
+    idBytes.copy(header, 2);
+    dataSocket.write(header);
+
+    // Now connect to local service and pipe
+    const localSocket = net.createConnection({
+      host: tunnel.targetHost,
+      port: tunnel.targetPort,
+      noDelay: Boolean(this.config.dataTcpNoDelay)
+    });
+
+    localSocket.on('connect', () => {
+      console.log(`[agent] local connected ${payload.streamId}`);
+      this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
+
+      // Pipe both directions — pipe() handles all backpressure internally
+      dataSocket.pipe(localSocket, { end: true });
+      localSocket.pipe(dataSocket, { end: true });
+    });
+
+    localSocket.on('error', (err: Error) => {
+      console.error(`[agent] local connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
+      try { dataSocket.destroy(); } catch {}
+    });
+
+    dataSocket.on('error', (err: Error) => {
+      console.error('[agent] data socket error', err);
+    });
+
+    // Cleanup when either side closes
+    dataSocket.on('close', () => {
+      console.log(`[agent] data socket closed ${payload.streamId}`);
+      this.tcpStreams.delete(payload.streamId);
+    });
+    localSocket.on('close', () => {
+      console.log(`[agent] local closed ${payload.streamId}`);
+      this.tcpStreams.delete(payload.streamId);
     });
   }
 
@@ -493,7 +378,7 @@ export class AgentClient {
   private cleanupAllStreams(): void {
     for (const stream of this.tcpStreams.values()) {
       try {
-        stream.socket?.close?.();
+        stream.socket.destroy();
       } catch {
         // ignore
       }
