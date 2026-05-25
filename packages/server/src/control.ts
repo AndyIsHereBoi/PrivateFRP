@@ -12,6 +12,7 @@ type TcpClientState = {
   socket: any;             // external client socket
   dataSocket: any | null;  // agent data socket (raw pipe)
   paused: boolean;         // client socket paused due to dataSocket backpressure
+  pendingBuf: Uint8Array[]; // buffered until dataSocket connects
 };
 
 type UdpSessionState = {
@@ -378,7 +379,8 @@ export class ControlPlane {
       agentId,
       socket,
       dataSocket: null,
-      paused: false
+      paused: false,
+      pendingBuf: []
     };
     this.tcpStreams.set(streamId, state);
     socket.__privateFrpStreamId = streamId;
@@ -402,12 +404,15 @@ export class ControlPlane {
     const payload = asUint8Array(data);
     if (payload.byteLength === 0) return;
 
-    if (!state.dataSocket) return;
+    if (!state.dataSocket) {
+      state.pendingBuf.push(payload);
+      return;
+    }
 
     const n = state.dataSocket.write(payload);
     if (n < 0 || (n >= 0 && n < payload.byteLength)) {
-      // Data socket buffer full — pause the client socket for TCP backpressure
       if (!state.paused) {
+        state.paused = true;
         state.paused = true;
         try { state.socket.pause?.(); } catch {}
       }
@@ -464,6 +469,10 @@ export class ControlPlane {
       if (remaining.length > 0) {
         socket.write(remaining);
       }
+      for (const buf of state.pendingBuf) {
+        socket.write(buf);
+      }
+      state.pendingBuf = [];
 
       // Data socket drain → resume client socket if paused
       (socket as any).__dataDrain = () => {
