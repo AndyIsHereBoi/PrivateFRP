@@ -297,26 +297,14 @@ export class AgentClient {
 
     console.log(`[agent] opening data pipe ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
 
-    // Uses Node.js net.Socket + pipe() — equivalent to playit-agent's tokio write_all loop.
     const dataSocket = net.createConnection({
       host: this.config.serverHost,
       port: this.config.dataPort,
       noDelay: Boolean(this.config.dataTcpNoDelay)
     });
 
-    // Wait for data socket to connect before writing header or connecting local.
-    // This ensures the streamId header is the FIRST bytes the server sees,
-    // and that dataSocket is ready before we pipe anything to it.
-    //
-    // Buffer any data that arrives before the pipe is set up (the window between
-    // the server linking its pipe and us linking ours). Minimal — only covers the
-    // localSocket connect latency, typically < 1ms on localhost.
-    const prePipeBuf: Buffer[] = [];
-    const onEarlyData = (chunk: Buffer) => { prePipeBuf.push(chunk); };
-    dataSocket.on('data', onEarlyData);
-
     dataSocket.on('connect', () => {
-      // Write streamId header on a connected socket — guaranteed first bytes
+      // Write streamId header first — server matches on this
       const idBytes = Buffer.from(payload.streamId, 'utf8');
       const header = Buffer.alloc(2 + idBytes.length);
       header.writeUInt16BE(idBytes.length, 0);
@@ -334,18 +322,20 @@ export class AgentClient {
         console.log(`[agent] local connected ${payload.streamId}`);
         this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
 
-        // Stop the pre-pipe buffer
-        dataSocket.removeListener('data', onEarlyData);
-
-        // Forward any data that arrived during setup
-        for (const chunk of prePipeBuf) {
+        // Relay: dataSocket ↔ localSocket. Node.js net.Socket.write() buffers
+        // internally and never drops data — no need to handle return values.
+        dataSocket.on('data', (chunk: Buffer) => {
+          if (localSocket.destroyed) return;
           localSocket.write(chunk);
-        }
-        prePipeBuf.length = 0;
+        });
+        localSocket.on('data', (chunk: Buffer) => {
+          if (dataSocket.destroyed) return;
+          dataSocket.write(chunk);
+        });
 
-        // Pipe both directions — pipe() handles all backpressure internally
-        dataSocket.pipe(localSocket, { end: true });
-        localSocket.pipe(dataSocket, { end: true });
+        // Propagate end/close
+        dataSocket.on('end', () => { if (!localSocket.destroyed) localSocket.end(); });
+        localSocket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
       });
 
       localSocket.on('error', (err: Error) => {

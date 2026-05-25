@@ -109,12 +109,8 @@ export class ControlPlane {
         const streamId = headerBuf.subarray(2, 2 + idLen).toString('utf8');
         const remaining = headerBuf.subarray(2 + idLen);
 
-        // Remove header listener; socket enters paused mode.
-        // Add a temporary buffer to catch data arriving during pipe setup.
+        // Remove header listener; socket enters paused mode
         dataSocket.removeListener('data', onHeaderData);
-        const prePipeBuf: Buffer[] = [];
-        const onEarlyData = (c: Buffer) => { prePipeBuf.push(c); };
-        dataSocket.on('data', onEarlyData);
 
         const state = this.tcpStreams.get(streamId);
         if (!state) {
@@ -126,19 +122,23 @@ export class ControlPlane {
         console.log(`[data] stream ${streamId} established`);
         state.dataSocket = dataSocket;
 
-        // Forward any data that arrived before/after the header
+        // Relay: dataSocket ↔ clientSocket. Node.js net.Socket.write() buffers
+        // internally and never drops data — no return-value handling needed.
+        dataSocket.on('data', (c: Buffer) => {
+          if (state!.socket.destroyed) return;
+          state!.socket.write(c);
+        });
+        state.socket.on('data', (c: Buffer) => {
+          if (dataSocket.destroyed) return;
+          dataSocket.write(c);
+        });
+
+        // Propagate end/close
+        dataSocket.on('end', () => { if (!state!.socket.destroyed) state!.socket.end(); });
+        state.socket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
+
+        // Flush any remaining header bytes, then resume client
         if (remaining.length > 0) state.socket.write(remaining);
-        for (const c of prePipeBuf) {
-          state.socket.write(c);
-        }
-        prePipeBuf.length = 0;
-
-        // Remove temp listener, set up pipe (pipe adds its own data listener)
-        dataSocket.removeListener('data', onEarlyData);
-        dataSocket.pipe(state.socket, { end: true });
-        state.socket.pipe(dataSocket, { end: true });
-
-        // Resume external client now that data socket is linked
         state.socket.resume();
 
         // Cleanup when either side closes
