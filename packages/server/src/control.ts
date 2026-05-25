@@ -1,7 +1,7 @@
 import dgram from 'node:dgram';
-import { connect, type Socket } from 'bun';
-import { DEFAULTS, FRAME_TYPES, type AgentConfig, type AgentRecord, type DialTcpFrame, type DialUdpSessionFrame, type Frame, type StreamCloseFrame, type StreamDataFrame, type TunnelRecord } from '@privatefrp/shared';
-import { encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
+import { type Socket } from 'bun';
+import { DEFAULTS, FRAME_TYPES, type AgentConfig, type AgentRecord, type DialTcpFrame, type DialUdpSessionFrame, type Frame, type TunnelRecord } from '@privatefrp/shared';
+import { encodeFrame, FrameParser, nowMs } from '@privatefrp/shared';
 import type { ServerRuntimeConfig } from '@privatefrp/shared';
 import type { ServerStore } from './store';
 
@@ -9,9 +9,9 @@ type TcpClientState = {
   streamId: string;
   tunnelId: string;
   agentId: string;
-  socket: any;
-  open: boolean;
-  paused: boolean;
+  socket: any;          // external client socket
+  dataSocket: any | null;  // agent data socket (raw pipe)
+  pendingBuf: Uint8Array[];
 };
 
 type UdpSessionState = {
@@ -36,6 +36,12 @@ type AgentConnectionState = {
   lastLatency: number | null;
   pendingWrites: Uint8Array[];
   pendingBytes: number;
+};
+
+// Tracks agent data connections before the streamId is received
+type AgentDataCon = {
+  socket: any;
+  buf: Uint8Array;
 };
 
 const MAX_AGENT_QUEUE_BYTES = 512 * 1024;
@@ -67,6 +73,7 @@ export class ControlPlane {
   private readonly tcpListeners = new Map<string, any>();
   private readonly udpListeners = new Map<string, any>();
   private agentListener: any = null;
+  private dataListener: any = null;
   private lastBackpressureLogAt = 0;
 
   constructor(
@@ -91,29 +98,46 @@ export class ControlPlane {
       }
     });
 
-    // Don't create listeners on startup - wait for agent to connect
+    // Raw TCP data listener — agents connect here per stream
+    this.dataListener = Bun.listen({
+      hostname: this.config.host,
+      port: this.config.dataPort,
+      socket: {
+        open: (socket: any) => {
+          (socket as any).__dataCon = { socket, buf: new Uint8Array(0) } as AgentDataCon;
+        },
+        data: (socket: any, data: unknown) => this.onAgentDataSocketData(socket, data),
+        close: (socket: any) => this.onAgentDataSocketClose(socket),
+        error: (_socket: any, error: Error) => {
+          console.error('[data] socket error', error);
+        }
+      }
+    });
+    console.log(`[data] listening on ${this.config.host}:${this.config.dataPort}`);
   }
 
   async stop(): Promise<void> {
     try {
-      // Close agent listener
-      try {
-        this.agentListener?.close?.();
-      } catch {}
+      try { this.agentListener?.close?.(); } catch {}
+      try { this.dataListener?.close?.(); } catch {}
 
-      // Close tcp listeners
       for (const listener of this.tcpListeners.values()) {
         try { listener.close?.(); } catch {}
       }
       this.tcpListeners.clear();
 
-      // Close udp listeners
       for (const s of this.udpListeners.values()) {
         try { s.close?.(); } catch {}
       }
       this.udpListeners.clear();
 
-      // Close any agent sockets
+      // Close any data sockets
+      for (const { dataSocket, socket } of this.tcpStreams.values()) {
+        try { dataSocket?.close?.(); } catch {}
+        try { socket?.end?.(); } catch {}
+      }
+      this.tcpStreams.clear();
+
       for (const state of this.agentConnections.values()) {
         try { state.socket.close?.(); } catch {}
       }
@@ -241,27 +265,14 @@ export class ControlPlane {
   private closeTunnelSessions(tunnelId: string, reason: string): void {
     for (const [streamId, stream] of this.tcpStreams) {
       if (stream.tunnelId !== tunnelId) continue;
-      const agent = this.agentConnections.get(stream.agentId);
-      agent && this.writeToAgent(agent, encodeFrame({
-        type: FRAME_TYPES.STREAM_CLOSE,
-        streamId,
-        payload: { streamId, reason } satisfies StreamCloseFrame
-      }));
-      try {
-        stream.socket.end?.();
-      } catch {
-        // ignore
-      }
+      try { stream.dataSocket?.end?.(); } catch {}
+      try { stream.socket.end?.(); } catch {}
       this.tcpStreams.delete(streamId);
     }
 
     for (const [sessionId, session] of this.udpSessions) {
       if (session.tunnelId !== tunnelId) continue;
-      try {
-        session.socket.close();
-      } catch {
-        // ignore
-      }
+      try { session.socket.close(); } catch {}
       this.udpSessions.delete(sessionId);
     }
   }
@@ -357,18 +368,18 @@ export class ControlPlane {
     console.log(`[tunnel] client connected ${tunnel.name} port ${tunnel.listenPort}`);
 
     const streamId = `${tunnel.id}:${nowMs()}:${Math.random().toString(36).slice(2, 10)}`;
-        const state: TcpClientState = {
+    const state: TcpClientState = {
       streamId,
       tunnelId: tunnel.id,
       agentId,
       socket,
-          open: false,
-          paused: false
+      dataSocket: null,
+      pendingBuf: []
     };
     this.tcpStreams.set(streamId, state);
     socket.__privateFrpStreamId = streamId;
 
-    const ok = this.writeToAgent(agent, encodeFrame({
+    this.writeToAgent(agent, encodeFrame({
       type: FRAME_TYPES.DIAL_TCP,
       streamId,
       payload: {
@@ -377,7 +388,6 @@ export class ControlPlane {
         clientAddress: String(socket.remoteAddress ?? 'unknown')
       } satisfies DialTcpFrame
     }));
-    if (!ok) this.pauseTcpStream(state);
   }
 
   private onTcpClientData(_tunnel: TunnelRecord, socket: any, data: unknown): void {
@@ -385,20 +395,19 @@ export class ControlPlane {
     if (!streamId) return;
     const state = this.tcpStreams.get(streamId);
     if (!state) return;
-    const agent = this.agentConnections.get(state.agentId);
-    if (!agent) {
-      socket.end?.();
-      this.tcpStreams.delete(streamId);
-      return;
-    }
-
     const payload = asUint8Array(data);
-    if (payload.byteLength > 0) {
-      console.log(`[tunnel] forwarding ${payload.byteLength} bytes from ${state.tunnelId}`);
-    }
+    if (payload.byteLength === 0) return;
 
-    const ok = this.writeToAgent(agent, encodeStreamDataFrame(streamId, payload));
-    if (!ok) this.pauseTcpStream(state);
+    if (state.dataSocket) {
+      // Pipe directly to the agent data connection
+      const n = state.dataSocket.write(payload);
+      if (n < 0 || (n >= 0 && n < payload.byteLength)) {
+        console.log(`[tunnel] data write stalled for ${streamId}`);
+      }
+    } else {
+      // Buffer until the agent's data connection arrives
+      state.pendingBuf.push(payload);
+    }
   }
 
   private onTcpClientClose(_tunnel: TunnelRecord, socket: any): void {
@@ -406,25 +415,83 @@ export class ControlPlane {
     if (!streamId) return;
     const state = this.tcpStreams.get(streamId);
     if (!state) return;
-    const agent = this.agentConnections.get(state.agentId);
     console.log(`[tunnel] client disconnected ${state.tunnelId}`);
-    if (agent) {
-      this.writeToAgent(agent, encodeFrame({
-        type: FRAME_TYPES.STREAM_CLOSE,
-        streamId,
-        payload: { streamId, reason: 'client closed' } satisfies StreamCloseFrame
-      }));
+    if (state.dataSocket) {
+      try { state.dataSocket.end?.(); } catch {}
     }
     this.tcpStreams.delete(streamId);
   }
 
-  private sendUdpPayloadToAgent(sessionId: string, message: Uint8Array): void {
-    const session = this.udpSessions.get(sessionId);
-    if (!session) return;
-    const agent = session.agentId ? this.agentConnections.get(session.agentId) : null;
-    if (!agent) return;
-    const ok = this.writeToAgent(agent, encodeUdpDataFrame(sessionId, message));
-    void ok;
+  // ---- Agent data connections (raw TCP pipe) ----
+
+  private onAgentDataSocketData(socket: any, data: unknown): void {
+    const con = (socket as any).__dataCon as AgentDataCon | undefined;
+    if (!con) return;
+
+    if (!con.socket.__dataStreamId) {
+      // Accumulate until we have the streamId
+      const chunk = asUint8Array(data);
+      const merged = new Uint8Array(con.buf.length + chunk.length);
+      merged.set(con.buf, 0);
+      merged.set(chunk, con.buf.length);
+      con.buf = merged;
+
+      if (con.buf.length < 2) return;
+      const idLen = new DataView(con.buf.buffer, con.buf.byteOffset, con.buf.byteLength).getUint16(0, false);
+      if (con.buf.length < 2 + idLen) return;
+      const streamId = new TextDecoder().decode(con.buf.subarray(2, 2 + idLen));
+      con.socket.__dataStreamId = streamId;
+
+      const state = this.tcpStreams.get(streamId);
+      if (!state) {
+        console.log(`[data] unknown stream ${streamId}, closing`);
+        try { socket.end?.(); } catch {}
+        return;
+      }
+
+      console.log(`[data] stream ${streamId} established`);
+
+      // Connect the data socket to the external client
+      state.dataSocket = socket;
+
+      // Flush any buffered client data
+      for (const buf of state.pendingBuf) {
+        const n = socket.write(buf);
+        if (n < 0 || (n >= 0 && n < buf.byteLength)) {
+          console.log(`[data] stalled writing buffered data for ${streamId}`);
+          break;
+        }
+      }
+      state.pendingBuf = [];
+
+      // Send any data that arrived after the streamId header
+      const remaining = con.buf.subarray(2 + idLen);
+      if (remaining.length > 0) {
+        state.dataSocket.write(remaining);
+      }
+    } else {
+      // Raw tunnel data from agent → write to external client
+      const state = this.tcpStreams.get(con.socket.__dataStreamId);
+      if (!state) {
+        try { socket.end?.(); } catch {}
+        return;
+      }
+      const payload = asUint8Array(data);
+      if (payload.length > 0) {
+        state.socket.write(payload);
+      }
+    }
+  }
+
+  private onAgentDataSocketClose(socket: any): void {
+    const streamId = (socket as any).__dataStreamId as string | undefined;
+    (socket as any).__dataCon = undefined;
+    if (!streamId) return;
+    const state = this.tcpStreams.get(streamId);
+    if (!state) return;
+    console.log(`[data] stream ${streamId} closed by agent`);
+    try { state.socket.end?.(); } catch {}
+    this.tcpStreams.delete(streamId);
   }
 
   private onAgentSocketOpen(socket: Socket): void {
@@ -438,18 +505,8 @@ export class ControlPlane {
     const parser = ((socket as any).__privateFrpParser as FrameParser | undefined) ?? new FrameParser();
     (socket as any).__privateFrpParser = parser;
 
-    for (const parsed of parser.push(asUint8Array(data))) {
-      if (parsed.kind === 'json') {
-        this.handleAgentFrame(socket, parsed.frame);
-        continue;
-      }
-      if (parsed.kind === 'stream-data') {
-        this.handleAgentStreamData(parsed.streamId, parsed.data);
-        continue;
-      }
-      if (parsed.kind === 'udp-data') {
-        this.handleAgentUdpData(parsed.sessionId, parsed.data);
-      }
+    for (const frame of parser.push(asUint8Array(data))) {
+      this.handleAgentFrame(socket, frame);
     }
   }
 
@@ -509,7 +566,7 @@ export class ControlPlane {
     }
 
     if (state.pendingBytes === 0) {
-      this.resumeAgentStreams(state.agentId);
+      // Queue flushed
     }
   }
 
@@ -524,44 +581,21 @@ export class ControlPlane {
     return state.pendingBytes === 0;
   }
 
-  private pauseTcpStream(state: TcpClientState): void {
-    if (state.paused) return;
-    state.paused = true;
-    try {
-      state.socket.pause?.();
-    } catch {
-      // ignore
-    }
-  }
-
-  private resumeAgentStreams(agentId: string): void {
-    for (const stream of this.tcpStreams.values()) {
-      if (stream.agentId !== agentId || !stream.paused) continue;
-      stream.paused = false;
-      try {
-        stream.socket.resume?.();
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  private handleAgentStreamData(streamId: string, data: Uint8Array): void {
-    const state = this.tcpStreams.get(streamId);
-    if (!state) {
-      console.log(`[tunnel] response dropped for unknown stream ${streamId}`);
-      return;
-    }
-    if (data.byteLength > 0) {
-      console.log(`[tunnel] response ${data.byteLength} bytes to client ${streamId}`);
-    }
-    state.socket.write(data);
-  }
-
-  private handleAgentUdpData(sessionId: string, data: Uint8Array): void {
+  private sendUdpPayloadToAgent(sessionId: string, message: Uint8Array): void {
     const session = this.udpSessions.get(sessionId);
     if (!session) return;
-    session.socket.send(data, session.peerPort, session.peerAddress);
+    const agent = session.agentId ? this.agentConnections.get(session.agentId) : null;
+    if (!agent) return;
+    this.writeToAgent(agent, encodeFrame({
+      type: FRAME_TYPES.UDP_DATA,
+      streamId: sessionId,
+      payload: {
+        sessionId,
+        data: Buffer.from(message).toString('base64'),
+        peerAddress: session.peerAddress,
+        peerPort: session.peerPort
+      }
+    }));
   }
 
   private handleAgentFrame(socket: Socket, frame: Frame): void {
@@ -603,7 +637,6 @@ export class ControlPlane {
           }
         }));
         this.pushConfigToAgent(agent.id);
-        // Create listeners for tunnels assigned to this agent
         void this.refreshTunnelListeners();
         this.broadcastDashboard();
         console.log(`[agent] connected ${agent.id} (${agent.name}) - ${String((socket as any).remoteAddress ?? 'unknown')}`);
@@ -612,39 +645,21 @@ export class ControlPlane {
       case FRAME_TYPES.HEARTBEAT: {
         const agentId = (socket as any).__privateFrpAgentId as string | undefined;
         if (!agentId) return;
-        const payload = frame.payload as { timestamp?: number } | undefined;
-        const state = this.agentConnections.get(agentId);
-        if (state) {
-          state.lastHeartbeat = nowMs();
-          state.lastLatency = typeof payload?.timestamp === 'number' ? Math.max(0, nowMs() - payload.timestamp) : null;
-          this.store.touchAgent(agentId, state.lastHeartbeat, state.lastLatency, state.remoteAddress);
+        const p = frame.payload as { timestamp?: number } | undefined;
+        const st = this.agentConnections.get(agentId);
+        if (st) {
+          st.lastHeartbeat = nowMs();
+          st.lastLatency = typeof p?.timestamp === 'number' ? Math.max(0, nowMs() - p.timestamp) : null;
+          this.store.touchAgent(agentId, st.lastHeartbeat, st.lastLatency, st.remoteAddress);
           this.broadcastDashboard();
         }
         return;
       }
-      case FRAME_TYPES.CONFIG_ACK:
-        {
-          const agentId = (socket as any).__privateFrpAgentId as string | undefined;
-          if (agentId) {
-            console.log(`[agent] config ack ${agentId}`);
-          }
-          return;
+      case FRAME_TYPES.CONFIG_ACK: {
+        const agentId = (socket as any).__privateFrpAgentId as string | undefined;
+        if (agentId) {
+          console.log(`[agent] config ack ${agentId}`);
         }
-      case FRAME_TYPES.STREAM_OPEN: {
-        const payload = frame.payload as { streamId?: string } | undefined;
-        if (!payload?.streamId) return;
-        const state = this.tcpStreams.get(payload.streamId);
-        if (!state) return;
-        state.open = true;
-        return;
-      }
-      case FRAME_TYPES.STREAM_CLOSE: {
-        const payload = frame.payload as { streamId?: string } | undefined;
-        if (!payload?.streamId) return;
-        const state = this.tcpStreams.get(payload.streamId);
-        if (!state) return;
-        state.socket.end?.();
-        this.tcpStreams.delete(payload.streamId);
         return;
       }
       default:
@@ -681,22 +696,21 @@ export class ControlPlane {
     if (!state) return;
     for (const [streamId, stream] of this.tcpStreams) {
       if (stream.agentId === agentId) {
-        stream.socket.end?.();
+        try { stream.dataSocket?.end?.(); } catch {}
+        try { stream.socket.end?.(); } catch {}
         this.tcpStreams.delete(streamId);
       }
     }
     for (const [sessionId, session] of this.udpSessions) {
       if (session.agentId === agentId) {
-        session.socket.close();
+        try { session.socket.close(); } catch {}
         this.udpSessions.delete(sessionId);
       }
     }
     this.agentConnections.delete(agentId);
     this.store.setAgentConnections(agentId, 0);
-    // Clear latency and IP when agent disconnects
     this.store.touchAgent(agentId, nowMs(), null, null);
     console.log(`[agent] disconnected ${agentId} (${reason})`);
-    // Refresh listeners since no agent is connected anymore
     void this.refreshTunnelListeners();
     this.broadcastDashboard();
   }

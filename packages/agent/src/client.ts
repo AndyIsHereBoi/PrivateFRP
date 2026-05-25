@@ -1,13 +1,12 @@
 import dgram from 'node:dgram';
 import { connect, type Socket } from 'bun';
 import { FRAME_TYPES, type AgentRuntimeConfig, type DialTcpFrame, type DialUdpSessionFrame, type TunnelRecord } from '@privatefrp/shared';
-import { encodeFrame, encodeStreamDataFrame, encodeUdpDataFrame, FrameParser, nowMs, type ParsedFrame } from '@privatefrp/shared';
+import { encodeFrame, FrameParser, nowMs } from '@privatefrp/shared';
 
 type LocalTcpStream = {
   streamId: string;
   tunnelId: string;
   socket: Socket;
-  pendingData: Uint8Array[];
 };
 
 type LocalUdpSession = {
@@ -120,18 +119,8 @@ export class AgentClient {
             });
           },
           data: (_s: Socket, data: unknown) => {
-            for (const parsed of this.parser.push(asUint8Array(data))) {
-              if (parsed.kind === 'json') {
-                void this.handleFrame(parsed.frame);
-                continue;
-              }
-              if (parsed.kind === 'stream-data') {
-                this.handleStreamData(parsed.streamId, parsed.data);
-                continue;
-              }
-              if (parsed.kind === 'udp-data') {
-                this.handleUdpData(parsed.sessionId, parsed.data);
-              }
+            for (const frame of this.parser.push(asUint8Array(data))) {
+              void this.handleFrame(frame);
             }
           },
           close: () => {
@@ -255,28 +244,6 @@ export class AgentClient {
     return this.pendingBytes === 0;
   }
 
-  private handleStreamData(streamId: string, data: Uint8Array): void {
-    const stream = this.tcpStreams.get(streamId);
-    if (!stream) return;
-    if (!stream.socket) {
-      if (data.byteLength > 0) {
-        console.log(`[agent] buffering ${data.byteLength} bytes for ${streamId}`);
-      }
-      stream.pendingData.push(data);
-      return;
-    }
-    if (data.byteLength > 0) {
-      console.log(`[agent] forwarding ${data.byteLength} bytes to local ${streamId}`);
-    }
-    stream.socket.write(data);
-  }
-
-  private handleUdpData(sessionId: string, data: Uint8Array): void {
-    const session = this.udpSessions.get(sessionId);
-    if (!session) return;
-    session.socket.send(data, session.targetPort, session.targetHost);
-  }
-
   private async handleFrame(frame: { type: string; payload?: unknown; streamId?: string }): Promise<void> {
     switch (frame.type) {
       case FRAME_TYPES.SERVER_HELLO:
@@ -324,59 +291,75 @@ export class AgentClient {
     const tunnel = this.tunnels.get(payload.tunnelId);
     if (!tunnel) {
       console.warn(`[agent] missing tunnel ${payload.tunnelId} for stream ${payload.streamId}`);
-      this.send({ type: FRAME_TYPES.STREAM_CLOSE, streamId: payload.streamId, payload: { streamId: payload.streamId, reason: 'tunnel missing' } });
       return;
     }
 
-    // Place the stream in pending state immediately so handleStreamData can buffer
-    this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: null as any, pendingData: [] });
+    console.log(`[agent] opening data pipe ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
 
-    const socket = connect({
-      hostname: tunnel.targetHost,
-      port: tunnel.targetPort,
+    // Connect to server data port, send streamId, then pipe to local service
+    const dataSocket = connect({
+      hostname: this.config.serverHost,
+      port: this.config.dataPort,
       socket: {
-        open: (localSocket: Socket) => {
-          const entry = { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket, pendingData: [] as Uint8Array[] };
-          this.tcpStreams.set(payload.streamId, entry);
-          this.send({ type: FRAME_TYPES.STREAM_OPEN, streamId: payload.streamId, payload: { streamId: payload.streamId } });
-          console.log(`[agent] local tcp open ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
-          for (const chunk of entry.pendingData) {
-            const n = localSocket.write(chunk);
-            if (n < 0) {
-              console.error(`[agent] flushing write failed for ${payload.streamId}`);
+        open: (ds: Socket) => {
+          // Send streamId: 2-byte length + utf8 bytes
+          const idBytes = new TextEncoder().encode(payload.streamId);
+          const header = new Uint8Array(2 + idBytes.length);
+          new DataView(header.buffer).setUint16(0, idBytes.length, false);
+          header.set(idBytes, 2);
+          ds.write(header);
+
+          // Now connect to the local service
+          const localSocket = connect({
+            hostname: tunnel.targetHost,
+            port: tunnel.targetPort,
+            socket: {
+              open: (ls: Socket) => {
+                console.log(`[agent] local connected ${payload.streamId}`);
+                this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: ls });
+                // Pipe: data socket ↔ local socket
+                (ds as any).__local = ls;
+                (ls as any).__remote = ds;
+              },
+              data: (_ls: Socket, data: unknown) => {
+                const bytes = asUint8Array(data);
+                if (bytes.byteLength > 0) {
+                  ds.write(bytes);
+                }
+              },
+              close: () => {
+                console.log(`[agent] local closed ${payload.streamId}`);
+                this.tcpStreams.delete(payload.streamId);
+                try { ds.end?.(); } catch {}
+              },
+              error: (_ls: Socket, error: Error) => {
+                console.error('[agent] local tcp error', error);
+              }
             }
-          }
-          entry.pendingData = [];
-          console.log(`[agent] flushed pending data for ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
+          });
+          localSocket.catch((err: Error) => {
+            console.error(`[agent] local connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
+            try { ds.end?.(); } catch {}
+          });
         },
-        data: (localSocket: Socket, data: unknown) => {
-          const bytes = asUint8Array(data);
-          if (bytes.byteLength > 0) {
-            console.log(`[agent] sending ${bytes.byteLength} bytes from local ${payload.streamId}`);
-          }
-          const ok = this.writeToServer(encodeStreamDataFrame(payload.streamId, bytes));
-          if (!ok) {
-            try {
-              localSocket.pause?.();
-            } catch {
-              // ignore
-            }
-            this.pausedSockets.add(localSocket);
-          }
+        data: (ds: Socket, data: unknown) => {
+          const local = (ds as any).__local as Socket | undefined;
+          if (!local) return;
+          local.write(asUint8Array(data));
         },
-        close: () => {
-          this.send({ type: FRAME_TYPES.STREAM_CLOSE, streamId: payload.streamId, payload: { streamId: payload.streamId, reason: 'local closed' } });
+        close: (s: Socket) => {
+          console.log(`[agent] data socket closed ${payload.streamId}`);
+          const local = (s as any).__local as Socket | undefined;
           this.tcpStreams.delete(payload.streamId);
-          console.log(`[agent] local tcp closed ${payload.streamId}`);
+          try { local?.end?.(); } catch {}
         },
-        error: (_socket: Socket, error: Error) => {
-          console.error('[agent] local tcp error', error);
+        error: (_ds: Socket, error: Error) => {
+          console.error('[agent] data socket error', error);
         }
       }
     });
-    socket.catch((err: Error) => {
-      console.error(`[agent] local tcp connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
-      this.send({ type: FRAME_TYPES.STREAM_CLOSE, streamId: payload.streamId, payload: { streamId: payload.streamId, reason: 'connect refused' } });
+    dataSocket.catch((err: Error) => {
+      console.error(`[agent] data connect failed ${payload.streamId}`, err);
     });
   }
 
@@ -386,7 +369,16 @@ export class AgentClient {
 
     const socket = dgram.createSocket('udp4');
     socket.on('message', (message: Uint8Array) => {
-      this.writeToServer(encodeUdpDataFrame(payload.sessionId, message));
+      this.send({
+        type: FRAME_TYPES.UDP_DATA,
+        streamId: payload.sessionId,
+        payload: {
+          sessionId: payload.sessionId,
+          data: Buffer.from(message).toString('base64'),
+          peerAddress: payload.peerAddress,
+          peerPort: payload.peerPort
+        }
+      });
     });
     socket.bind();
     this.udpSessions.set(payload.sessionId, {
