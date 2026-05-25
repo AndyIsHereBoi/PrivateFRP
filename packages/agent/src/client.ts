@@ -259,8 +259,14 @@ export class AgentClient {
     const stream = this.tcpStreams.get(streamId);
     if (!stream) return;
     if (!stream.socket) {
+      if (data.byteLength > 0) {
+        console.log(`[agent] buffering ${data.byteLength} bytes for ${streamId}`);
+      }
       stream.pendingData.push(data);
       return;
+    }
+    if (data.byteLength > 0) {
+      console.log(`[agent] forwarding ${data.byteLength} bytes to local ${streamId}`);
     }
     stream.socket.write(data);
   }
@@ -341,6 +347,9 @@ export class AgentClient {
         },
         data: (localSocket: Socket, data: unknown) => {
           const bytes = asUint8Array(data);
+          if (bytes.byteLength > 0) {
+            console.log(`[agent] sending ${bytes.byteLength} bytes from local ${payload.streamId}`);
+          }
           const ok = this.writeToServer(encodeStreamDataFrame(payload.streamId, bytes));
           if (!ok) {
             try {

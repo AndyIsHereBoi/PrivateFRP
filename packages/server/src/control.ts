@@ -351,8 +351,10 @@ export class ControlPlane {
     const agent = agentId ? this.agentConnections.get(agentId) : null;
     if (!agent) {
       socket.end?.();
+      console.log(`[tunnel] rejecting ${tunnel.name} (agent not connected)`);
       return;
     }
+    console.log(`[tunnel] client connected ${tunnel.name} port ${tunnel.listenPort}`);
 
     const streamId = `${tunnel.id}:${nowMs()}:${Math.random().toString(36).slice(2, 10)}`;
         const state: TcpClientState = {
@@ -391,6 +393,9 @@ export class ControlPlane {
     }
 
     const payload = asUint8Array(data);
+    if (payload.byteLength > 0) {
+      console.log(`[tunnel] forwarding ${payload.byteLength} bytes from ${state.tunnelId}`);
+    }
 
     const ok = this.writeToAgent(agent, encodeStreamDataFrame(streamId, payload));
     if (!ok) this.pauseTcpStream(state);
