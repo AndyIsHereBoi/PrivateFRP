@@ -105,6 +105,7 @@ export class ControlPlane {
       port: this.config.dataPort,
       socket: {
         open: (socket: any) => {
+          socket.setNoDelay(true);
           (socket as any).__dataCon = { socket, buf: new Uint8Array(0) } as AgentDataCon;
         },
         data: (socket: any, data: unknown) => this.onAgentDataSocketData(socket, data),
@@ -299,7 +300,14 @@ export class ControlPlane {
       socket: {
         open: (socket: any) => this.onTcpClientOpen(tunnel, socket),
         data: (socket: any, data: unknown) => this.onTcpClientData(tunnel, socket, data),
-        close: (socket: any) => this.onTcpClientClose(tunnel, socket)
+        close: (socket: any) => this.onTcpClientClose(tunnel, socket),
+        drain: (socket: any) => {
+          const streamId = socket.__privateFrpStreamId as string | undefined;
+          if (!streamId) return;
+          const state = this.tcpStreams.get(streamId);
+          if (!state?.dataSocket) return;
+          try { state.dataSocket.resume?.(); } catch {}
+        }
       }
     });
 
@@ -371,6 +379,7 @@ export class ControlPlane {
       return;
     }
     console.log(`[tunnel] client connected ${tunnel.name} port ${tunnel.listenPort}`);
+    socket.setNoDelay(true);
 
     const streamId = `${tunnel.id}:${nowMs()}:${Math.random().toString(36).slice(2, 10)}`;
     const state: TcpClientState = {
@@ -412,7 +421,6 @@ export class ControlPlane {
     const n = state.dataSocket.write(payload);
     if (n < 0 || (n >= 0 && n < payload.byteLength)) {
       if (!state.paused) {
-        state.paused = true;
         state.paused = true;
         try { state.socket.pause?.(); } catch {}
       }
@@ -490,7 +498,11 @@ export class ControlPlane {
       }
       const payload = asUint8Array(data);
       if (payload.length === 0) return;
-      state.socket.write(payload);
+      const n = state.socket.write(payload);
+      if (n < 0 || (n >= 0 && n < payload.length)) {
+        // Client socket full — pause data socket reads
+        try { socket.pause?.(); } catch {}
+      }
     }
   }
 
