@@ -7,6 +7,7 @@ type LocalTcpStream = {
   streamId: string;
   tunnelId: string;
   socket: Socket;
+  pendingData: Uint8Array[];
 };
 
 type LocalUdpSession = {
@@ -257,6 +258,10 @@ export class AgentClient {
   private handleStreamData(streamId: string, data: Uint8Array): void {
     const stream = this.tcpStreams.get(streamId);
     if (!stream) return;
+    if (!stream.socket) {
+      stream.pendingData.push(data);
+      return;
+    }
     stream.socket.write(data);
   }
 
@@ -295,7 +300,11 @@ export class AgentClient {
         const payload = frame.payload as { streamId?: string } | undefined;
         if (!payload?.streamId) return;
         const stream = this.tcpStreams.get(payload.streamId);
-        stream?.socket.close?.();
+        if (stream?.socket) {
+          try {
+            stream.socket.close?.();
+          } catch { /* ignore */ }
+        }
         this.tcpStreams.delete(payload.streamId);
         console.log(`[agent] stream close ${payload.streamId}`);
         return;
@@ -313,14 +322,22 @@ export class AgentClient {
       return;
     }
 
+    // Place the stream in pending state immediately so handleStreamData can buffer
+    this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: null as any, pendingData: [] });
+
     const socket = connect({
       hostname: tunnel.targetHost,
       port: tunnel.targetPort,
       socket: {
         open: (localSocket: Socket) => {
-          this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
+          const entry = { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket, pendingData: [] as Uint8Array[] };
+          this.tcpStreams.set(payload.streamId, entry);
           this.send({ type: FRAME_TYPES.STREAM_OPEN, streamId: payload.streamId, payload: { streamId: payload.streamId } });
           console.log(`[agent] local tcp open ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
+          for (const chunk of entry.pendingData) {
+            localSocket.write(chunk);
+          }
+          entry.pendingData = [];
         },
         data: (localSocket: Socket, data: unknown) => {
           const bytes = asUint8Array(data);
@@ -371,7 +388,7 @@ export class AgentClient {
   private cleanupAllStreams(): void {
     for (const stream of this.tcpStreams.values()) {
       try {
-        stream.socket.close?.();
+        stream.socket?.close?.();
       } catch {
         // ignore
       }
