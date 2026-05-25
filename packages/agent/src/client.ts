@@ -337,8 +337,6 @@ export class AgentClient {
                 }
               },
               data: (ls: Socket, data: unknown) => {
-                // Don't send data before header is fully flushed
-                if ((ds as any).__headerRemaining) return;
                 const bytes = asUint8Array(data);
                 if (bytes.byteLength === 0) return;
                 writeSocket(ds, bytes);
