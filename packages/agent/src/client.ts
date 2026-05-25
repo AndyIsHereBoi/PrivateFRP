@@ -325,14 +325,25 @@ export class AgentClient {
               },
               data: (_ls: Socket, data: unknown) => {
                 const bytes = asUint8Array(data);
-                if (bytes.byteLength > 0) {
-                  ds.write(bytes);
+                if (bytes.byteLength === 0) return;
+                const n = ds.write(bytes);
+                if (n < 0 || (n >= 0 && n < bytes.byteLength)) {
+                  // Data socket buffer full — pause local socket
+                  (ds as any).__localPaused = true;
+                  try { _ls.pause?.(); } catch {}
                 }
               },
               close: () => {
                 console.log(`[agent] local closed ${payload.streamId}`);
                 this.tcpStreams.delete(payload.streamId);
                 try { ds.end?.(); } catch {}
+              },
+              drain: (l: Socket) => {
+                // Local socket buffer cleared — resume data socket if paused (download direction)
+                if ((l as any).__dsPaused) {
+                  (l as any).__dsPaused = false;
+                  try { ds.resume?.(); } catch {}
+                }
               },
               error: (_ls: Socket, error: Error) => {
                 console.error('[agent] local tcp error', error);
@@ -347,13 +358,30 @@ export class AgentClient {
         data: (ds: Socket, data: unknown) => {
           const local = (ds as any).__local as Socket | undefined;
           if (!local) return;
-          local.write(asUint8Array(data));
+          const bytes = asUint8Array(data);
+          if (bytes.byteLength === 0) return;
+          const n = local.write(bytes);
+          if (n < 0 || (n >= 0 && n < bytes.byteLength)) {
+            // Local socket buffer full — pause data socket
+            (local as any).__dsPaused = true;
+            try { ds.pause?.(); } catch {}
+          }
         },
         close: (s: Socket) => {
           console.log(`[agent] data socket closed ${payload.streamId}`);
           const local = (s as any).__local as Socket | undefined;
           this.tcpStreams.delete(payload.streamId);
           try { local?.end?.(); } catch {}
+        },
+        drain: (s: Socket) => {
+          // Data socket can accept more data — resume data socket reads (download direction)
+          try { s.resume?.(); } catch {}
+          // Also resume local socket if paused (upload direction)
+          const local = (s as any).__local as Socket | undefined;
+          if (local && (s as any).__localPaused) {
+            (s as any).__localPaused = false;
+            try { local.resume?.(); } catch {}
+          }
         },
         error: (_ds: Socket, error: Error) => {
           console.error('[agent] data socket error', error);
