@@ -124,7 +124,7 @@ export class ControlPlane {
         console.log(`[data] stream ${streamId} established`);
         state.dataSocket = dataSocket;
 
-        // Remove the early-data buffer handler — pipe takes over now
+        // Remove the early-data buffer handler — explicit relay takes over now
         if (state._earlyDataHandler) {
           state.socket.removeListener('data', state._earlyDataHandler);
           state._earlyDataHandler = null;
@@ -137,17 +137,38 @@ export class ControlPlane {
 
         // Flush buffered client data (collected before agent connected)
         if (state.prePipeBuf.length > 0) {
-          console.log(`[data] stream ${streamId} flushing ${state.prePipeBuf.length} pre-pipe chunks`);
           for (const chunk of state.prePipeBuf) {
             if (!dataSocket.destroyed) dataSocket.write(chunk);
           }
           state.prePipeBuf.length = 0;
         }
 
-        // Bidirectional pipe: Node.js socket.pipe() = playit-agent TcpPipe
-        // (tokio read+write_all loop with backpressure and end propagation)
-        state.socket.pipe(dataSocket, { end: true });
-        dataSocket.pipe(state.socket, { end: true });
+        // Bidirectional relay with backpressure (playit equivalent:
+        // tokio read+write_all in a loop — no extra buffers).
+        //
+        // clientSocket → dataSocket
+        let csDraining = false;
+        state.socket.on('data', (chunk: Buffer) => {
+          if (dataSocket.destroyed) return;
+          const ok = dataSocket.write(chunk);
+          if (!ok && !csDraining) { csDraining = true; state.socket.pause(); }
+        });
+        dataSocket.on('drain', () => {
+          if (csDraining) { csDraining = false; state.socket.resume(); }
+        });
+        state.socket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
+
+        // dataSocket → clientSocket
+        let dcDraining = false;
+        dataSocket.on('data', (chunk: Buffer) => {
+          if (state.socket.destroyed) return;
+          const ok = state.socket.write(chunk);
+          if (!ok && !dcDraining) { dcDraining = true; dataSocket.pause(); }
+        });
+        state.socket.on('drain', () => {
+          if (dcDraining) { dcDraining = false; dataSocket.resume(); }
+        });
+        dataSocket.on('end', () => { if (!state.socket.destroyed) state.socket.end(); });
 
         // Cleanup when either side closes
         dataSocket.on('close', () => {

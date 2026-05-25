@@ -332,24 +332,43 @@ export class AgentClient {
         console.log(`[agent] local connected ${payload.streamId}`);
         this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
 
-        // Remove the early-data handler — pipe takes over now
+        // Remove the early-data handler — explicit relay takes over now
         dataSocket.removeListener('data', onEarlyServerData);
 
-        // Step 4: flush buffered server data, then set up bidirectional pipe.
-        // Node.js socket.pipe(dest) = tokio read+write_all loop:
-        //   reads from src, writes all bytes to dest, handles backpressure,
-        //   propagates end. Equivalent to playit-agent's TcpPipe.
+        // Flush buffered server data first
         if (prePipeFromServer.length > 0) {
-          console.log(`[agent][${payload.streamId}] flushing ${prePipeFromServer.length} pre-pipe chunks from server`);
           for (const chunk of prePipeFromServer) {
             if (!localSocket.destroyed) localSocket.write(chunk);
           }
           prePipeFromServer.length = 0;
         }
 
-        // Bidirectional pipe (playit: TcpPipe for tunn→origin + TcpPipe for origin→tunn)
-        dataSocket.pipe(localSocket, { end: true });
-        localSocket.pipe(dataSocket, { end: true });
+        // Bidirectional relay with backpressure (playit equivalent:
+        // tokio read+write_all in a loop — no extra buffers).
+        //
+        // dataSocket → localSocket
+        let dsDraining = false;
+        dataSocket.on('data', (chunk: Buffer) => {
+          if (localSocket.destroyed) return;
+          const ok = localSocket.write(chunk);
+          if (!ok && !dsDraining) { dsDraining = true; dataSocket.pause(); }
+        });
+        localSocket.on('drain', () => {
+          if (dsDraining) { dsDraining = false; dataSocket.resume(); }
+        });
+        dataSocket.on('end', () => { if (!localSocket.destroyed) localSocket.end(); });
+
+        // localSocket → dataSocket
+        let lsDraining = false;
+        localSocket.on('data', (chunk: Buffer) => {
+          if (dataSocket.destroyed) return;
+          const ok = dataSocket.write(chunk);
+          if (!ok && !lsDraining) { lsDraining = true; localSocket.pause(); }
+        });
+        dataSocket.on('drain', () => {
+          if (lsDraining) { lsDraining = false; localSocket.resume(); }
+        });
+        localSocket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
       });
 
       localSocket.on('error', (err: Error) => {
