@@ -318,7 +318,7 @@ export class AgentClient {
                 new DataView(header.buffer).setUint16(0, idBytes.length, false);
                 header.set(idBytes, 2);
                 ds.write(header);
-                ds.setNoDelay(true);
+                try { ds.setNoDelay(Boolean(this.config.dataTcpNoDelay)); } catch {}
 
                 // link sockets
                 (ds as any).__local = ls;

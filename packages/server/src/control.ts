@@ -109,7 +109,7 @@ export class ControlPlane {
       port: this.config.dataPort,
       socket: {
         open: (socket: any) => {
-          socket.setNoDelay(true);
+          socket.setNoDelay(Boolean(this.config.dataTcpNoDelay));
           (socket as any).__dataCon = { socket, buf: new Uint8Array(0) } as AgentDataCon;
         },
         data: (socket: any, data: unknown) => this.onAgentDataSocketData(socket, data),
@@ -374,7 +374,7 @@ export class ControlPlane {
       return;
     }
     console.log(`[tunnel] client connected ${tunnel.name} port ${tunnel.listenPort}`);
-    socket.setNoDelay(true);
+    try { socket.setNoDelay(Boolean(this.config.dataTcpNoDelay)); } catch {}
 
     const streamId = `${tunnel.id}:${nowMs()}:${Math.random().toString(36).slice(2, 10)}`;
     const state: TcpClientState = {
@@ -494,7 +494,7 @@ export class ControlPlane {
       }
 
       console.log(`[data] stream ${streamId} established`);
-      socket.setNoDelay(true);
+      try { socket.setNoDelay(Boolean(this.config.dataTcpNoDelay)); } catch {}
 
       // Connect the data socket to the external client
       state.dataSocket = socket;

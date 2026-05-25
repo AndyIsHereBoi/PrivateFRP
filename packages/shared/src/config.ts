@@ -1,5 +1,5 @@
 import { DEFAULTS } from './constants';
-import { readInt, readJson, readString } from './utils/env';
+import { readInt, readJson, readString, readBool } from './utils/env';
 import type { TunnelRecord } from './types';
 
 export interface ServerRuntimeConfig {
@@ -14,6 +14,7 @@ export interface ServerRuntimeConfig {
   sessionSecret: string;
   dataDir: string;
   dashboardPublicIp: string;
+  dataTcpNoDelay: boolean;
 }
 
 export interface AgentRuntimeConfig {
@@ -26,6 +27,7 @@ export interface AgentRuntimeConfig {
   reconnectDelayMs: number;
   dataDir: string;
   tunnels: TunnelRecord[];
+  dataTcpNoDelay: boolean;
 }
 
 export function readServerRuntimeConfig(env: Record<string, string | undefined>): ServerRuntimeConfig {
@@ -43,6 +45,8 @@ export function readServerRuntimeConfig(env: Record<string, string | undefined>)
     sessionSecret: readString(env, 'DASHBOARD_SESSION_SECRET', 'change-me-in-production'),
     dataDir,
     dashboardPublicIp: readString(env, 'DASHBOARD_PUBLIC_IP', '')
+    ,
+    dataTcpNoDelay: readBool(env, 'DATA_TCP_NODELAY', false)
   };
 }
 
@@ -59,5 +63,7 @@ export function readAgentRuntimeConfig(env: Record<string, string | undefined>):
     reconnectDelayMs: readInt(env, 'AGENT_RECONNECT_MS', DEFAULTS.AGENT_RECONNECT_MS),
     dataDir,
     tunnels: readJson<TunnelRecord[]>(env, 'TUNNELS', [])
+    ,
+    dataTcpNoDelay: readBool(env, 'DATA_TCP_NODELAY', false)
   };
 }
