@@ -462,14 +462,8 @@ export class ControlPlane {
   }
 
   private onTcpClientDrain(socket: any): void {
-    // Flush any queued relay data to the agent data socket
-    const streamId = socket.__privateFrpStreamId as string | undefined;
-    if (streamId) {
-      const state = this.tcpStreams.get(streamId);
-      if (state?.dataSocket) {
-        flushRelayBuffer(state.dataSocket);
-      }
-    }
+    // Flush download data queued on this client socket (agent → client direction)
+    flushRelayBuffer(socket);
   }
 
   // ---- Agent data connections (raw TCP pipe) ----
@@ -527,14 +521,8 @@ export class ControlPlane {
   }
 
   private onAgentDataSocketDrain(socket: any): void {
-    // Flush any queued relay data to the external client socket
-    const streamId = (socket as any).__dataStreamId as string | undefined;
-    if (streamId) {
-      const state = this.tcpStreams.get(streamId);
-      if (state) {
-        flushRelayBuffer(state.socket);
-      }
-    }
+    // Flush upload data queued on this data socket (client → agent direction)
+    flushRelayBuffer(socket);
   }
 
   private onAgentDataSocketClose(socket: any): void {
