@@ -11,12 +11,6 @@ type TcpClientState = {
   agentId: string;
   socket: any;             // external client socket
   dataSocket: any | null;  // agent data socket (raw pipe)
-  // single-slot pending write to agent (client -> agent direction)
-  pendingAgentWrite?: { buf: Uint8Array; offset: number } | null;
-  // single-slot pending write to client (agent -> client direction)
-  pendingClientWrite?: { buf: Uint8Array; offset: number } | null;
-  // whether external client was paused waiting for data socket
-  pausedUntilData?: boolean;
 };
 
 type UdpSessionState = {
@@ -382,14 +376,10 @@ export class ControlPlane {
       tunnelId: tunnel.id,
       agentId,
       socket,
-      dataSocket: null,
-      pendingAgentWrite: null,
-      pendingClientWrite: null,
-      pausedUntilData: true
+      dataSocket: null
     };
     this.tcpStreams.set(streamId, state);
     socket.__privateFrpStreamId = streamId;
-    try { socket.pause?.(); } catch {}
 
     this.writeToAgent(agent, encodeFrame({
       type: FRAME_TYPES.DIAL_TCP,
@@ -409,32 +399,8 @@ export class ControlPlane {
     if (!state) return;
     const payload = asUint8Array(data);
     if (payload.byteLength === 0) return;
-
-    if (!state.dataSocket) {
-      // Data socket not yet ready; the external client should be paused until data socket connects.
-      // Drop any unexpected data to avoid buffering in memory.
-      return;
-    }
-    // Attempt to write to the agent data socket and honor partial writes.
-    const written = writeSocket(state.dataSocket, payload);
-    if (written < 0) {
-      try { state.socket.end?.(); } catch {}
-      return;
-    }
-    if (written < payload.byteLength) {
-      if (state.pendingAgentWrite) {
-        const old = state.pendingAgentWrite;
-        const oldRemaining = old.buf.subarray(old.offset);
-        const merged = new Uint8Array(oldRemaining.length + payload.byteLength - written);
-        merged.set(oldRemaining, 0);
-        merged.set(payload.subarray(written), oldRemaining.length);
-        state.pendingAgentWrite = { buf: merged, offset: 0 };
-      } else {
-        state.pendingAgentWrite = { buf: payload, offset: written };
-      }
-      try { state.socket.pause?.(); } catch {}
-      return;
-    }
+    if (!state.dataSocket) return;
+    writeSocket(state.dataSocket, payload);
   }
 
   private onTcpClientClose(_tunnel: TunnelRecord, socket: any): void {
@@ -449,30 +415,8 @@ export class ControlPlane {
     this.tcpStreams.delete(streamId);
   }
 
-  private onTcpClientDrain(socket: any): void {
-    const streamId = socket.__privateFrpStreamId as string | undefined;
-    if (!streamId) return;
-    const state = this.tcpStreams.get(streamId);
-    if (!state) return;
-
-    const pending = state.pendingClientWrite;
-    if (!pending) return;
-
-    const chunk = pending.buf.subarray(pending.offset);
-    const written = writeSocket(state.socket, chunk);
-    if (written < 0) {
-      try { state.socket.end?.(); } catch {}
-      return;
-    }
-    if (written < chunk.length) {
-      pending.offset += written;
-      return;
-    }
-
-    state.pendingClientWrite = null;
-
-    // resume the agent data socket if it was paused
-    try { state.dataSocket?.resume?.(); } catch {}
+  private onTcpClientDrain(_socket: any): void {
+    // Bun handles buffering internally — no app-level pending queue needed
   }
 
   // ---- Agent data connections (raw TCP pipe) ----
@@ -508,48 +452,13 @@ export class ControlPlane {
       // Connect the data socket to the external client
       state.dataSocket = socket;
 
-      // Write any data that arrived before the data connection
+      // Flush any data that arrived before the streamId was matched
       const remaining = con.buf.subarray(2 + idLen);
       if (remaining.length > 0) {
-        // remaining bytes are agent->client payload
-        const client = state.socket;
-        const writtenToClient = writeSocket(client, remaining);
-        if (writtenToClient < 0) {
-          try { socket.end?.(); } catch {}
-          return;
-        }
-        if (writtenToClient < remaining.length) {
-          state.pendingClientWrite = { buf: remaining, offset: writtenToClient };
-          try { socket.pause?.(); } catch {}
-        }
-      }
-
-      // If there was a partial client->agent write queued earlier, try to flush it to the agent now
-      if (state.pendingAgentWrite) {
-        const p = state.pendingAgentWrite;
-        const toSend = p.buf.subarray(p.offset);
-        const wrote = writeSocket(socket, toSend);
-        if (wrote < 0) {
-          try { socket.end?.(); } catch {}
-          return;
-        }
-        if (wrote < toSend.length) {
-          p.offset += wrote;
-          try { state.socket.pause?.(); } catch {}
-          return;
-        }
-        state.pendingAgentWrite = null;
-      }
-
-      // If no pending writes remain, resume the external client which was paused on connect
-      if (!state.pendingClientWrite && !state.pendingAgentWrite) {
-        if (state.pausedUntilData) {
-          state.pausedUntilData = false;
-          try { state.socket.resume?.(); } catch {}
-        }
+        writeSocket(state.socket, remaining);
       }
     } else {
-      // Raw tunnel data from agent → write to external client
+      // Raw tunnel data from agent → write to external client (Bun handles buffering)
       const state = this.tcpStreams.get(con.socket.__dataStreamId);
       if (!state) {
         try { socket.end?.(); } catch {}
@@ -557,56 +466,12 @@ export class ControlPlane {
       }
       const payload = asUint8Array(data);
       if (payload.length === 0) return;
-      const written = writeSocket(state.socket, payload);
-      if (written < 0) {
-        try { socket.end?.(); } catch {}
-        return;
-      }
-      if (written < payload.length) {
-        // the external client can't accept all data; merge with any existing pending chunk
-        if (state.pendingClientWrite) {
-          // merge new chunk onto existing pending buffer
-          const old = state.pendingClientWrite;
-          const oldRemaining = old.buf.subarray(old.offset);
-          const merged = new Uint8Array(oldRemaining.length + payload.length - written);
-          merged.set(oldRemaining, 0);
-          merged.set(payload.subarray(written), oldRemaining.length);
-          state.pendingClientWrite = { buf: merged, offset: 0 };
-        } else {
-          state.pendingClientWrite = { buf: payload, offset: written };
-        }
-        try { socket.pause?.(); } catch {}
-        return;
-      }
+      writeSocket(state.socket, payload);
     }
   }
 
-  private onAgentDataSocketDrain(socket: any): void {
-    const streamId = (socket as any).__dataStreamId as string | undefined;
-    if (!streamId) return;
-    const state = this.tcpStreams.get(streamId);
-    if (!state) return;
-    // Flush any pending server->agent write (client -> agent direction)
-    if (state.pendingAgentWrite) {
-      const p = state.pendingAgentWrite;
-      const chunk = p.buf.subarray(p.offset);
-      const written = writeSocket(socket, chunk);
-      if (written < 0) {
-        try { state.socket.end?.(); } catch {}
-        return;
-      }
-      if (written < chunk.length) {
-        p.offset += written;
-        return;
-      }
-      state.pendingAgentWrite = null;
-    }
-
-    // Resume the agent data socket if it was paused
-    try { socket.resume?.(); } catch {}
-
-    // Resume external client if it was paused due to agent backpressure
-    try { state.socket.resume?.(); } catch {}
+  private onAgentDataSocketDrain(_socket: any): void {
+    // Bun handles buffering internally — no app-level pending queue needed
   }
 
   private onAgentDataSocketClose(socket: any): void {

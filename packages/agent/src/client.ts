@@ -308,7 +308,11 @@ export class AgentClient {
           const header = new Uint8Array(2 + idBytes.length);
           new DataView(header.buffer).setUint16(0, idBytes.length, false);
           header.set(idBytes, 2);
-          ds.write(header);
+          const written = writeSocket(ds, header);
+          if (written < header.length) {
+            // Partial write of streamId header — store remainder for drain to flush
+            (ds as any).__headerRemaining = written < 0 ? header : header.subarray(written);
+          }
           try { ds.setNoDelay(Boolean(this.config.dataTcpNoDelay)); } catch {}
 
           // Now connect to local service
@@ -326,58 +330,25 @@ export class AgentClient {
                 (ls as any).__remote = ds;
 
                 // flush any data that arrived from server before local was ready
-                const pending = (ds as any).__pendingBuf as { buf: Uint8Array; offset: number } | undefined;
+                const pending = (ds as any).__pendingBuf as Uint8Array | undefined;
                 if (pending) {
-                  const chunk = pending.buf.subarray(pending.offset);
-                  const wrote = writeSocket(ls, chunk);
-                  if (wrote < 0) {
-                    try { ds.end?.(); } catch {}
-                    return;
-                  }
-                  if (wrote < chunk.length) {
-                    pending.offset += wrote;
-                    return;
-                  }
+                  writeSocket(ls, pending);
                   (ds as any).__pendingBuf = undefined;
                 }
-                try { ds.resume?.(); } catch {}
               },
               data: (ls: Socket, data: unknown) => {
+                // Don't send data before header is fully flushed
+                if ((ds as any).__headerRemaining) return;
                 const bytes = asUint8Array(data);
                 if (bytes.byteLength === 0) return;
-                const written = writeSocket(ds, bytes);
-                if (written < 0) {
-                  try { ls.end?.(); } catch {}
-                  return;
-                }
-                if (written < bytes.byteLength) {
-                  (ds as any).__pendingToServer = { buf: bytes, offset: written };
-                  try { ls.pause?.(); } catch {}
-                  return;
-                }
+                writeSocket(ds, bytes);
               },
               close: () => {
                 console.log(`[agent] local closed ${payload.streamId}`);
                 this.tcpStreams.delete(payload.streamId);
                 try { ds.end?.(); } catch {}
               },
-              drain: (ls: Socket) => {
-                const pendingLocal = (ls as any).__pendingLocal as { buf: Uint8Array; offset: number } | undefined;
-                if (pendingLocal) {
-                  const chunk = pendingLocal.buf.subarray(pendingLocal.offset);
-                  const wrote = writeSocket(ls, chunk);
-                  if (wrote < 0) {
-                    try { ds.end?.(); } catch {}
-                    return;
-                  }
-                  if (wrote < chunk.length) {
-                    pendingLocal.offset += wrote;
-                    return;
-                  }
-                  (ls as any).__pendingLocal = undefined;
-                }
-                try { ds.resume?.(); } catch {}
-              },
+              drain: () => { /* Bun handles buffering */ },
               error: (_ls: Socket, error: Error) => {
                 console.error('[agent] local tcp error', error);
               }
@@ -391,33 +362,22 @@ export class AgentClient {
         data: (ds: Socket, data: unknown) => {
           const local = (ds as any).__local as Socket | undefined;
           if (!local) {
-            // local not ready yet; merge into single pending buffer, then pause ds
+            // local not ready yet; merge into a single growing buffer
             const chunk = asUint8Array(data);
-            const prev = (ds as any).__pendingBuf as { buf: Uint8Array; offset: number } | undefined;
+            const prev = (ds as any).__pendingBuf as Uint8Array | undefined;
             if (!prev) {
-              (ds as any).__pendingBuf = { buf: chunk, offset: 0 };
+              (ds as any).__pendingBuf = chunk;
             } else {
-              // merge new chunk onto existing buffer
-              const merged = new Uint8Array(prev.buf.length + chunk.length);
-              merged.set(prev.buf, 0);
-              merged.set(chunk, prev.buf.length);
-              (ds as any).__pendingBuf = { buf: merged, offset: prev.offset };
+              const merged = new Uint8Array(prev.length + chunk.length);
+              merged.set(prev, 0);
+              merged.set(chunk, prev.length);
+              (ds as any).__pendingBuf = merged;
             }
-            try { ds.pause?.(); } catch {}
             return;
           }
           const bytes = asUint8Array(data);
           if (bytes.byteLength === 0) return;
-          const written = writeSocket(local, bytes);
-          if (written < 0) {
-            try { ds.end?.(); } catch {}
-            return;
-          }
-          if (written < bytes.byteLength) {
-            (local as any).__pendingLocal = { buf: bytes, offset: written };
-            try { ds.pause?.(); } catch {}
-            return;
-          }
+          writeSocket(local, bytes);
         },
         close: (ds: Socket) => {
           console.log(`[agent] data socket closed ${payload.streamId}`);
@@ -426,21 +386,20 @@ export class AgentClient {
           try { local?.end?.(); } catch {}
         },
         drain: (ds: Socket) => {
-          const pending = (ds as any).__pendingToServer as { buf: Uint8Array; offset: number } | undefined;
-          if (pending) {
-            const chunk = pending.buf.subarray(pending.offset);
-            const wrote = writeSocket(ds, chunk);
+          // Flush any remaining streamId header bytes if needed
+          const headerRemaining = (ds as any).__headerRemaining as Uint8Array | undefined;
+          if (headerRemaining) {
+            const wrote = writeSocket(ds, headerRemaining);
             if (wrote < 0) {
               try { (ds as any).__local?.end?.(); } catch {}
               return;
             }
-            if (wrote < chunk.length) {
-              pending.offset += wrote;
+            if (wrote < headerRemaining.length) {
+              (ds as any).__headerRemaining = headerRemaining.subarray(wrote);
               return;
             }
-            (ds as any).__pendingToServer = undefined;
+            (ds as any).__headerRemaining = undefined;
           }
-          try { (ds as any).__local?.resume?.(); } catch {}
         },
         error: (_ds: Socket, error: Error) => {
           console.error('[agent] data socket error', error);
