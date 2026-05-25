@@ -407,6 +407,7 @@ export class ControlPlane {
     const state = this.tcpStreams.get(streamId);
     if (!state) return;
     const agent = this.agentConnections.get(state.agentId);
+    console.log(`[tunnel] client disconnected ${state.tunnelId}`);
     if (agent) {
       this.writeToAgent(agent, encodeFrame({
         type: FRAME_TYPES.STREAM_CLOSE,
@@ -547,7 +548,13 @@ export class ControlPlane {
 
   private handleAgentStreamData(streamId: string, data: Uint8Array): void {
     const state = this.tcpStreams.get(streamId);
-    if (!state) return;
+    if (!state) {
+      console.log(`[tunnel] response dropped for unknown stream ${streamId}`);
+      return;
+    }
+    if (data.byteLength > 0) {
+      console.log(`[tunnel] response ${data.byteLength} bytes to client ${streamId}`);
+    }
     state.socket.write(data);
   }
 

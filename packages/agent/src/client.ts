@@ -341,9 +341,13 @@ export class AgentClient {
           this.send({ type: FRAME_TYPES.STREAM_OPEN, streamId: payload.streamId, payload: { streamId: payload.streamId } });
           console.log(`[agent] local tcp open ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
           for (const chunk of entry.pendingData) {
-            localSocket.write(chunk);
+            const n = localSocket.write(chunk);
+            if (n < 0) {
+              console.error(`[agent] flushing write failed for ${payload.streamId}`);
+            }
           }
           entry.pendingData = [];
+          console.log(`[agent] flushed pending data for ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
         },
         data: (localSocket: Socket, data: unknown) => {
           const bytes = asUint8Array(data);
