@@ -331,23 +331,40 @@ export class AgentClient {
           if (!loggedAgentToLocal) {
             try {
               const hex = chunk.slice(0, 512).toString('hex');
-              console.log(`[agent][${payload.streamId}] first agent->local ${hex}`);
+              console.log(`[agent][${payload.streamId}] first agent->local ts=${nowMs()} len=${chunk.length} ${hex}`);
             } catch { /* ignore logging errors */ }
             loggedAgentToLocal = true;
           }
           if (localSocket.destroyed) return;
-          localSocket.write(chunk);
+          try {
+            const ok = localSocket.write(chunk);
+            if (!ok) console.log(`[agent][${payload.streamId}] agent->local write returned false ts=${nowMs()} len=${chunk.length}`);
+          } catch (err) {
+            console.error(`[agent][${payload.streamId}] write error agent->local`, err);
+          }
         });
+        dataSocket.on('drain', () => {
+          console.log(`[agent][${payload.streamId}] dataSocket drain ts=${nowMs()}`);
+        });
+        localSocket.on('drain', () => {
+          console.log(`[agent][${payload.streamId}] localSocket drain ts=${nowMs()}`);
+        });
+
         localSocket.on('data', (chunk: Buffer) => {
           if (!loggedLocalToAgent) {
             try {
               const hex = chunk.slice(0, 512).toString('hex');
-              console.log(`[agent][${payload.streamId}] first local->agent ${hex}`);
+              console.log(`[agent][${payload.streamId}] first local->agent ts=${nowMs()} len=${chunk.length} ${hex}`);
             } catch { /* ignore logging errors */ }
             loggedLocalToAgent = true;
           }
           if (dataSocket.destroyed) return;
-          dataSocket.write(chunk);
+          try {
+            const ok = dataSocket.write(chunk);
+            if (!ok) console.log(`[agent][${payload.streamId}] local->agent write returned false ts=${nowMs()} len=${chunk.length}`);
+          } catch (err) {
+            console.error(`[agent][${payload.streamId}] write error local->agent`, err);
+          }
         });
 
         // Propagate end/close

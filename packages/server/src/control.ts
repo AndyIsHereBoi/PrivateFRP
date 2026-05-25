@@ -126,28 +126,45 @@ export class ControlPlane {
         let loggedClientToAgent = false;
 
         // Relay: dataSocket ↔ clientSocket. Node.js net.Socket.write() buffers
-        // internally and never drops data — we still log first bytes to debug.
+        // internally; we log write() results and drain events to detect backpressure.
         dataSocket.on('data', (c: Buffer) => {
           if (!loggedAgentToClient) {
             try {
               const hex = c.slice(0, 512).toString('hex');
-              console.log(`[server][${streamId}] first agent->client ${hex}`);
+              console.log(`[server][${streamId}] first agent->client ts=${nowMs()} len=${c.length} ${hex}`);
             } catch {}
             loggedAgentToClient = true;
           }
           if (state!.socket.destroyed) return;
-          state!.socket.write(c);
+          try {
+            const ok = state!.socket.write(c);
+            if (!ok) console.log(`[server][${streamId}] agent->client write returned false ts=${nowMs()} len=${c.length}`);
+          } catch (err) {
+            console.error(`[server][${streamId}] write error agent->client`, err);
+          }
         });
+        dataSocket.on('drain', () => {
+          console.log(`[server][${streamId}] dataSocket drain ts=${nowMs()}`);
+        });
+
         state.socket.on('data', (c: Buffer) => {
           if (!loggedClientToAgent) {
             try {
               const hex = c.slice(0, 512).toString('hex');
-              console.log(`[server][${streamId}] first client->agent ${hex}`);
+              console.log(`[server][${streamId}] first client->agent ts=${nowMs()} len=${c.length} ${hex}`);
             } catch {}
             loggedClientToAgent = true;
           }
           if (dataSocket.destroyed) return;
-          dataSocket.write(c);
+          try {
+            const ok = dataSocket.write(c);
+            if (!ok) console.log(`[server][${streamId}] client->agent write returned false ts=${nowMs()} len=${c.length}`);
+          } catch (err) {
+            console.error(`[server][${streamId}] write error client->agent`, err);
+          }
+        });
+        state.socket.on('drain', () => {
+          console.log(`[server][${streamId}] clientSocket drain ts=${nowMs()}`);
         });
 
         // Propagate end/close
@@ -160,8 +177,14 @@ export class ControlPlane {
             const hexRem = remaining.slice(0, 512).toString('hex');
             console.log(`[data] stream ${streamId} header remaining ${remaining.length} bytes -> ${hexRem}`);
           } catch {}
-          state.socket.write(remaining);
+          try {
+            const ok = state.socket.write(remaining);
+            if (!ok) console.log(`[server][${streamId}] header write returned false ts=${nowMs()} len=${remaining.length}`);
+          } catch (err) {
+            console.error(`[server][${streamId}] header write error`, err);
+          }
         }
+        console.log(`[data] resuming client for ${streamId}`);
         state.socket.resume();
 
         // Cleanup when either side closes
@@ -380,6 +403,7 @@ export class ControlPlane {
 
       // Pause client until agent data socket connects (pipe handles resume)
       clientSocket.pause();
+      console.log(`[tcp] paused client socket for tunnel ${tunnel.name} stream ${streamId}`);
 
       this.writeToAgent(ag, encodeFrame({
         type: FRAME_TYPES.DIAL_TCP,
