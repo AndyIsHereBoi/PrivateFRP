@@ -295,160 +295,142 @@ export class AgentClient {
     }
 
     console.log(`[agent] opening data pipe ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
-
-    // Connect to server data port, send streamId, then pipe to local service
-    const dataSocket = connect({
-      hostname: this.config.serverHost,
-      port: this.config.dataPort,
+    // Connect to the local service first, then establish the server data socket.
+    const localPromise = connect({
+      hostname: tunnel.targetHost,
+      port: tunnel.targetPort,
       socket: {
-        open: (ds: Socket) => {
-          // Send streamId: 2-byte length + utf8 bytes
-          const idBytes = new TextEncoder().encode(payload.streamId);
-          const header = new Uint8Array(2 + idBytes.length);
-          new DataView(header.buffer).setUint16(0, idBytes.length, false);
-          header.set(idBytes, 2);
-          ds.write(header);
-          ds.setNoDelay(true);
+        open: (ls: Socket) => {
+          ls.setNoDelay(true);
+          // register local stream but keep it paused until data socket is ready
+          this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: ls });
+          try { ls.pause?.(); } catch {}
 
-          // Now connect to the local service
-          const localSocket = connect({
-            hostname: tunnel.targetHost,
-            port: tunnel.targetPort,
+          // Now open data socket to server
+          const dataPromise = connect({
+            hostname: this.config.serverHost,
+            port: this.config.dataPort,
             socket: {
-              open: (ls: Socket) => {
-                console.log(`[agent] local connected ${payload.streamId}`);
-                ls.setNoDelay(true);
-                this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: ls });
-                // Pipe: data socket ↔ local socket
+              open: (ds: Socket) => {
+                // Send streamId header
+                const idBytes = new TextEncoder().encode(payload.streamId);
+                const header = new Uint8Array(2 + idBytes.length);
+                new DataView(header.buffer).setUint16(0, idBytes.length, false);
+                header.set(idBytes, 2);
+                ds.write(header);
+                ds.setNoDelay(true);
+
+                // link sockets
                 (ds as any).__local = ls;
                 (ls as any).__remote = ds;
-                // Flush any buffered data from server
-                  const pending = (ds as any).__pendingBuf as Uint8Array[] | undefined;
-                  if (pending && pending.length > 0) {
-                    for (const buf of pending) {
-                      const written = writeSocket(ls, buf);
-                      if (written < 0) {
-                        try { ds.end?.(); } catch {}
-                        break;
-                      }
-                      if (written < buf.length) {
-                        // store remainder on ds and pause ds
-                        (ds as any).__pendingLocal = (ds as any).__pendingLocal ?? [];
-                        (ds as any).__pendingLocal.push(buf.subarray(written));
-                        try { ds.pause?.(); } catch {}
-                        break;
-                      }
-                    }
-                    (ds as any).__pendingBuf = [];
-                  }
+
+                // resume local now that ds is ready
+                try { ls.resume?.(); } catch {}
               },
-              data: (_ls: Socket, data: unknown) => {
-                  const bytes = asUint8Array(data);
-                  if (bytes.byteLength === 0) return;
-                  // Write to server data socket and handle partial writes
-                  const written = writeSocket(ds, bytes);
-                  if (written < 0) {
-                    try { _ls.end?.(); } catch {}
-                    return;
-                  }
-                  if (written < bytes.byteLength) {
-                    (ds as any).__pendingToServer = (ds as any).__pendingToServer ?? [];
-                    (ds as any).__pendingToServer.push(bytes.subarray(written));
-                    try { _ls.pause?.(); } catch {}
-                    return;
-                  }
-              },
-              close: () => {
-                console.log(`[agent] local closed ${payload.streamId}`);
-                this.tcpStreams.delete(payload.streamId);
-                try { ds.end?.(); } catch {}
-              },
-              drain: (ls: Socket) => {
-                // Attempt to flush any server->local pending bytes stored on ds
-                const pendingLocal = (ds as any).__pendingLocal as Uint8Array[] | undefined;
-                if (pendingLocal && pendingLocal.length > 0) {
-                  while (pendingLocal.length > 0) {
-                    const chunk = pendingLocal[0]!;
-                    const wrote = writeSocket(ls, chunk);
-                    if (wrote < 0) {
-                      try { ds.end?.(); } catch {}
-                      return;
-                    }
-                    if (wrote < chunk.length) {
-                      pendingLocal[0] = chunk.subarray(wrote);
-                      return;
-                    }
-                    pendingLocal.shift();
-                  }
+              data: (ds: Socket, data: unknown) => {
+                const local = (ds as any).__local as Socket | undefined;
+                if (!local) {
+                  // no local yet; pause ds to avoid buffering
+                  try { ds.pause?.(); } catch {}
+                  return;
                 }
-                try { ds.resume?.(); } catch {}
+                const bytes = asUint8Array(data);
+                if (bytes.byteLength === 0) return;
+                const written = writeSocket(local, bytes);
+                if (written < 0) {
+                  try { local.end?.(); } catch {}
+                  return;
+                }
+                if (written < bytes.byteLength) {
+                  // single-slot pending for local
+                  (local as any).__pendingLocal = { buf: bytes, offset: written };
+                  try { ds.pause?.(); } catch {}
+                  return;
+                }
               },
-              error: (_ls: Socket, error: Error) => {
-                console.error('[agent] local tcp error', error);
+              close: (ds: Socket) => {
+                console.log(`[agent] data socket closed ${payload.streamId}`);
+                const local = (ds as any).__local as Socket | undefined;
+                this.tcpStreams.delete(payload.streamId);
+                try { local?.end?.(); } catch {}
+              },
+              drain: (ds: Socket) => {
+                // flush pending bytes from local -> server if any
+                const pending = (ds as any).__pendingToServer as { buf: Uint8Array; offset: number } | undefined;
+                if (pending) {
+                  const chunk = pending.buf.subarray(pending.offset);
+                  const wrote = writeSocket(ds, chunk);
+                  if (wrote < 0) {
+                    try { (ds as any).__local?.end?.(); } catch {}
+                    return;
+                  }
+                  if (wrote < chunk.length) {
+                    pending.offset += wrote;
+                    return;
+                  }
+                  (ds as any).__pendingToServer = undefined;
+                }
+                try { (ds as any).__local?.resume?.(); } catch {}
+              },
+              error: (_ds: Socket, error: Error) => {
+                console.error('[agent] data socket error', error);
               }
             }
           });
-          localSocket.catch((err: Error) => {
-            console.error(`[agent] local connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
-            try { ds.end?.(); } catch {}
+          dataPromise.catch((err: Error) => {
+            console.error(`[agent] data connect failed ${payload.streamId}`, err);
+            try { ls.end?.(); } catch {}
           });
         },
-        data: (ds: Socket, data: unknown) => {
-          const local = (ds as any).__local as Socket | undefined;
-          if (!local) {
-            if (!(ds as any).__pendingBuf) (ds as any).__pendingBuf = [];
-            (ds as any).__pendingBuf.push(asUint8Array(data));
+        data: (ls: Socket, data: unknown) => {
+          const ds = (ls as any).__remote as Socket | undefined;
+          if (!ds) {
+            // pause local until ds is ready - avoids buffering in the agent process
+            try { ls.pause?.(); } catch {}
             return;
           }
           const bytes = asUint8Array(data);
           if (bytes.byteLength === 0) return;
-          // Write to local socket with partial-write handling
-          const written = writeSocket(local, bytes);
+          const written = writeSocket(ds, bytes);
           if (written < 0) {
-            try { ds.end?.(); } catch {}
+            try { ls.end?.(); } catch {}
             return;
           }
           if (written < bytes.byteLength) {
-            (ds as any).__pendingLocal = (ds as any).__pendingLocal ?? [];
-            (ds as any).__pendingLocal.push(bytes.subarray(written));
-            try { ds.pause?.(); } catch {}
+            // single-slot pending for ds
+            (ds as any).__pendingToServer = { buf: bytes, offset: written };
+            try { ls.pause?.(); } catch {}
             return;
           }
         },
-        close: (s: Socket) => {
-          console.log(`[agent] data socket closed ${payload.streamId}`);
-          const local = (s as any).__local as Socket | undefined;
+        close: () => {
+          console.log(`[agent] local closed ${payload.streamId}`);
           this.tcpStreams.delete(payload.streamId);
-          try { local?.end?.(); } catch {}
         },
-        drain: (s: Socket) => {
-          // flush pending bytes queued from local -> server direction
-          const pendingToServer = (s as any).__pendingToServer as Uint8Array[] | undefined;
-          if (pendingToServer && pendingToServer.length > 0) {
-            while (pendingToServer.length > 0) {
-              const chunk = pendingToServer[0]!;
-              const wrote = writeSocket(s, chunk);
-              if (wrote < 0) {
-                try { (s as any).__local?.end?.(); } catch {}
-                return;
-              }
-              if (wrote < chunk.length) {
-                pendingToServer[0] = chunk.subarray(wrote);
-                return;
-              }
-              pendingToServer.shift();
+        drain: (ls: Socket) => {
+          const pendingLocal = (ls as any).__pendingLocal as { buf: Uint8Array; offset: number } | undefined;
+          if (pendingLocal) {
+            const chunk = pendingLocal.buf.subarray(pendingLocal.offset);
+            const wrote = writeSocket(ls, chunk);
+            if (wrote < 0) {
+              try { (ls as any).__remote?.end?.(); } catch {}
+              return;
             }
+            if (wrote < chunk.length) {
+              pendingLocal.offset += wrote;
+              return;
+            }
+            (ls as any).__pendingLocal = undefined;
           }
-          // resume local socket if it was paused due to backpressure to server
-          try { (s as any).__local?.resume?.(); } catch {}
+          try { (ls as any).__remote?.resume?.(); } catch {}
         },
-        error: (_ds: Socket, error: Error) => {
-          console.error('[agent] data socket error', error);
+        error: (_ls: Socket, error: Error) => {
+          console.error('[agent] local tcp error', error);
         }
       }
     });
-    dataSocket.catch((err: Error) => {
-      console.error(`[agent] data connect failed ${payload.streamId}`, err);
+    localPromise.catch((err: Error) => {
+      console.error(`[agent] local connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
     });
   }
 
