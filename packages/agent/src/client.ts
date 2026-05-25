@@ -288,6 +288,8 @@ export class AgentClient {
     }
   }
 
+  // Matches playit-agent TcpPipe pattern: connect tunnel → claim → connect origin → pipe.
+  // Node.js socket.pipe() is the equivalent of tokio's read+write_all loop.
   private async openLocalTcpStream(payload: DialTcpFrame): Promise<void> {
     const tunnel = this.tunnels.get(payload.tunnelId);
     if (!tunnel) {
@@ -297,21 +299,29 @@ export class AgentClient {
 
     console.log(`[agent] opening data pipe ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
 
+    // Step 1: connect to server data port (playit: connect to claim address)
     const dataSocket = net.createConnection({
       host: this.config.serverHost,
       port: this.config.dataPort,
       noDelay: Boolean(this.config.dataTcpNoDelay)
     });
 
+    // Buffer early bytes from server before localSocket is ready
+    const prePipeFromServer: Buffer[] = [];
+    const onEarlyServerData = (chunk: Buffer) => {
+      prePipeFromServer.push(chunk);
+    };
+    dataSocket.on('data', onEarlyServerData);
+
     dataSocket.on('connect', () => {
-      // Write streamId header first — server matches on this
+      // Step 2: send streamId header to claim this stream (playit: send claim token)
       const idBytes = Buffer.from(payload.streamId, 'utf8');
       const header = Buffer.alloc(2 + idBytes.length);
       header.writeUInt16BE(idBytes.length, 0);
       idBytes.copy(header, 2);
       dataSocket.write(header);
 
-      // Now connect to local service
+      // Step 3: connect to local origin (playit: TcpStream::connect(origin_addr))
       const localSocket = net.createConnection({
         host: tunnel.targetHost,
         port: tunnel.targetPort,
@@ -322,54 +332,24 @@ export class AgentClient {
         console.log(`[agent] local connected ${payload.streamId}`);
         this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
 
-        // Relay: dataSocket ↔ localSocket. Node.js net.Socket.write() buffers
-        // internally and never drops data — we still log first bytes to debug.
-        let loggedAgentToLocal = false;
-        let loggedLocalToAgent = false;
+        // Remove the early-data handler — pipe takes over now
+        dataSocket.removeListener('data', onEarlyServerData);
 
-        dataSocket.on('data', (chunk: Buffer) => {
-          if (!loggedAgentToLocal) {
-            try {
-              const hex = chunk.slice(0, 512).toString('hex');
-              console.log(`[agent][${payload.streamId}] first agent->local ts=${nowMs()} len=${chunk.length} ${hex}`);
-            } catch { /* ignore logging errors */ }
-            loggedAgentToLocal = true;
+        // Step 4: flush buffered server data, then set up bidirectional pipe.
+        // Node.js socket.pipe(dest) = tokio read+write_all loop:
+        //   reads from src, writes all bytes to dest, handles backpressure,
+        //   propagates end. Equivalent to playit-agent's TcpPipe.
+        if (prePipeFromServer.length > 0) {
+          console.log(`[agent][${payload.streamId}] flushing ${prePipeFromServer.length} pre-pipe chunks from server`);
+          for (const chunk of prePipeFromServer) {
+            if (!localSocket.destroyed) localSocket.write(chunk);
           }
-          if (localSocket.destroyed) return;
-          try {
-            const ok = localSocket.write(chunk);
-            if (!ok) console.log(`[agent][${payload.streamId}] agent->local write returned false ts=${nowMs()} len=${chunk.length}`);
-          } catch (err) {
-            console.error(`[agent][${payload.streamId}] write error agent->local`, err);
-          }
-        });
-        dataSocket.on('drain', () => {
-          console.log(`[agent][${payload.streamId}] dataSocket drain ts=${nowMs()}`);
-        });
-        localSocket.on('drain', () => {
-          console.log(`[agent][${payload.streamId}] localSocket drain ts=${nowMs()}`);
-        });
+          prePipeFromServer.length = 0;
+        }
 
-        localSocket.on('data', (chunk: Buffer) => {
-          if (!loggedLocalToAgent) {
-            try {
-              const hex = chunk.slice(0, 512).toString('hex');
-              console.log(`[agent][${payload.streamId}] first local->agent ts=${nowMs()} len=${chunk.length} ${hex}`);
-            } catch { /* ignore logging errors */ }
-            loggedLocalToAgent = true;
-          }
-          if (dataSocket.destroyed) return;
-          try {
-            const ok = dataSocket.write(chunk);
-            if (!ok) console.log(`[agent][${payload.streamId}] local->agent write returned false ts=${nowMs()} len=${chunk.length}`);
-          } catch (err) {
-            console.error(`[agent][${payload.streamId}] write error local->agent`, err);
-          }
-        });
-
-        // Propagate end/close
-        dataSocket.on('end', () => { if (!localSocket.destroyed) localSocket.end(); });
-        localSocket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
+        // Bidirectional pipe (playit: TcpPipe for tunn→origin + TcpPipe for origin→tunn)
+        dataSocket.pipe(localSocket, { end: true });
+        localSocket.pipe(dataSocket, { end: true });
       });
 
       localSocket.on('error', (err: Error) => {

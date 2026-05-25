@@ -12,6 +12,8 @@ type TcpClientState = {
   agentId: string;
   socket: any;             // external client socket
   dataSocket: any | null;  // agent data socket (raw pipe)
+  prePipeBuf: Buffer[];    // buffered client data before dataSocket connects
+  _earlyDataHandler: ((chunk: Buffer) => void) | null;  // removed once pipe is set up
 };
 
 type UdpSessionState = {
@@ -122,70 +124,30 @@ export class ControlPlane {
         console.log(`[data] stream ${streamId} established`);
         state.dataSocket = dataSocket;
 
-        let loggedAgentToClient = false;
-        let loggedClientToAgent = false;
-
-        // Relay: dataSocket ↔ clientSocket. Node.js net.Socket.write() buffers
-        // internally; we log write() results and drain events to detect backpressure.
-        dataSocket.on('data', (c: Buffer) => {
-          if (!loggedAgentToClient) {
-            try {
-              const hex = c.slice(0, 512).toString('hex');
-              console.log(`[server][${streamId}] first agent->client ts=${nowMs()} len=${c.length} ${hex}`);
-            } catch {}
-            loggedAgentToClient = true;
-          }
-          if (state!.socket.destroyed) return;
-          try {
-            const ok = state!.socket.write(c);
-            if (!ok) console.log(`[server][${streamId}] agent->client write returned false ts=${nowMs()} len=${c.length}`);
-          } catch (err) {
-            console.error(`[server][${streamId}] write error agent->client`, err);
-          }
-        });
-        dataSocket.on('drain', () => {
-          console.log(`[server][${streamId}] dataSocket drain ts=${nowMs()}`);
-        });
-
-        state.socket.on('data', (c: Buffer) => {
-          if (!loggedClientToAgent) {
-            try {
-              const hex = c.slice(0, 512).toString('hex');
-              console.log(`[server][${streamId}] first client->agent ts=${nowMs()} len=${c.length} ${hex}`);
-            } catch {}
-            loggedClientToAgent = true;
-          }
-          if (dataSocket.destroyed) return;
-          try {
-            const ok = dataSocket.write(c);
-            if (!ok) console.log(`[server][${streamId}] client->agent write returned false ts=${nowMs()} len=${c.length}`);
-          } catch (err) {
-            console.error(`[server][${streamId}] write error client->agent`, err);
-          }
-        });
-        state.socket.on('drain', () => {
-          console.log(`[server][${streamId}] clientSocket drain ts=${nowMs()}`);
-        });
-
-        // Propagate end/close
-        dataSocket.on('end', () => { if (!state!.socket.destroyed) state!.socket.end(); });
-        state.socket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
-
-        // Flush any remaining header bytes (first N bytes logged), then resume client
-        if (remaining.length > 0) {
-          try {
-            const hexRem = remaining.slice(0, 512).toString('hex');
-            console.log(`[data] stream ${streamId} header remaining ${remaining.length} bytes -> ${hexRem}`);
-          } catch {}
-          try {
-            const ok = state.socket.write(remaining);
-            if (!ok) console.log(`[server][${streamId}] header write returned false ts=${nowMs()} len=${remaining.length}`);
-          } catch (err) {
-            console.error(`[server][${streamId}] header write error`, err);
-          }
+        // Remove the early-data buffer handler — pipe takes over now
+        if (state._earlyDataHandler) {
+          state.socket.removeListener('data', state._earlyDataHandler);
+          state._earlyDataHandler = null;
         }
-        console.log(`[data] resuming client for ${streamId}`);
-        state.socket.resume();
+
+        // Flush any extra bytes that arrived with the streamId header
+        if (remaining.length > 0) {
+          state.socket.write(remaining);
+        }
+
+        // Flush buffered client data (collected before agent connected)
+        if (state.prePipeBuf.length > 0) {
+          console.log(`[data] stream ${streamId} flushing ${state.prePipeBuf.length} pre-pipe chunks`);
+          for (const chunk of state.prePipeBuf) {
+            if (!dataSocket.destroyed) dataSocket.write(chunk);
+          }
+          state.prePipeBuf.length = 0;
+        }
+
+        // Bidirectional pipe: Node.js socket.pipe() = playit-agent TcpPipe
+        // (tokio read+write_all loop with backpressure and end propagation)
+        state.socket.pipe(dataSocket, { end: true });
+        dataSocket.pipe(state.socket, { end: true });
 
         // Cleanup when either side closes
         dataSocket.on('close', () => {
@@ -397,13 +359,19 @@ export class ControlPlane {
         tunnelId: tunnel.id,
         agentId,
         socket: clientSocket,
-        dataSocket: null
+        dataSocket: null,
+        prePipeBuf: [],
+        _earlyDataHandler: null
       };
       this.tcpStreams.set(streamId, state);
 
-      // Pause client until agent data socket connects (pipe handles resume)
-      clientSocket.pause();
-      console.log(`[tcp] paused client socket for tunnel ${tunnel.name} stream ${streamId}`);
+      // Buffer client data until agent data socket connects (playit pattern:
+      // no pause — buffer ourselves, then flush and remove handler when pipe is ready).
+      const onClientData = (chunk: Buffer) => {
+        state.prePipeBuf.push(chunk);
+      };
+      state._earlyDataHandler = onClientData;
+      clientSocket.on('data', onClientData);
 
       this.writeToAgent(ag, encodeFrame({
         type: FRAME_TYPES.DIAL_TCP,
