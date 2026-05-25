@@ -66,47 +66,50 @@ function writeSocket(socket: any, data: Uint8Array): number {
 }
 
 /**
- * Write data to a relay socket with zero-copy partial-write buffering.
- * Uses a chunk list (like control-frame backpressure) to avoid O(n²) merging.
- * On drain, call flushRelayBuffer(socket) to flush remaining chunks.
- * Returns true if all bytes were written, false if some were queued.
+ * Relay data from source to destination socket. On partial write, the unwritten
+ * tail is stored as a single chunk and the source socket is PAUSED to prevent
+ * unbounded buffering. Call relayDrain(dest) on the destination's drain event
+ * to flush the tail and resume the source.
  */
-function bufferedRelayWrite(socket: any, data: Uint8Array): boolean {
-  const pending = (socket as any).__relayPending as Uint8Array[] | undefined;
-  if (pending && pending.length > 0) {
-    pending.push(data);
-    return false;
+function relayWrite(source: any, dest: any, data: Uint8Array): void {
+  const tail = (dest as any).__relayChunk as Uint8Array | undefined;
+  if (tail && tail.byteLength > 0) {
+    const merged = new Uint8Array(tail.byteLength + data.byteLength);
+    merged.set(tail, 0);
+    merged.set(data, tail.byteLength);
+    (dest as any).__relayChunk = merged;
+    return;
   }
 
-  const written = writeSocket(socket, data);
-  if (written < 0) return false;
+  const written = writeSocket(dest, data);
+  if (written < 0) return;
   if (written < data.byteLength) {
-    (socket as any).__relayPending = [data.subarray(written)];
-    return false;
+    (dest as any).__relayChunk = data.subarray(written);
+    (dest as any).__relaySource = source;
+    try { source.pause?.(); } catch { /* ignore */ }
   }
-  return true;
 }
 
-/** Call on socket drain to flush queued relay chunks. Each chunk is a subarray
- *  of the original data — no copies were made during buffering. */
-function flushRelayBuffer(socket: any): void {
-  const pending = (socket as any).__relayPending as Uint8Array[] | undefined;
-  if (!pending || pending.length === 0) return;
+/** Call on the DESTINATION socket's drain event. Flushes the single pending
+ *  tail chunk (if any) and resumes the source socket. */
+function relayDrain(dest: any): void {
+  const chunk = (dest as any).__relayChunk as Uint8Array | undefined;
+  if (!chunk || chunk.byteLength === 0) return;
 
-  while (pending.length > 0) {
-    const chunk = pending[0]!;
-    const written = writeSocket(socket, chunk);
-    if (written < 0) {
-      (socket as any).__relayPending = undefined;
-      return;
-    }
-    if (written < chunk.byteLength) {
-      pending[0] = chunk.subarray(written);
-      return;
-    }
-    pending.shift();
+  const written = writeSocket(dest, chunk);
+  if (written < 0) {
+    (dest as any).__relayChunk = undefined;
+    return;
   }
-  (socket as any).__relayPending = undefined;
+  if (written < chunk.byteLength) {
+    (dest as any).__relayChunk = chunk.subarray(written);
+    return;
+  }
+
+  (dest as any).__relayChunk = undefined;
+  const source = (dest as any).__relaySource as any | undefined;
+  (dest as any).__relaySource = undefined;
+  try { source?.resume?.(); } catch { /* ignore */ }
 }
 
 export class ControlPlane {
@@ -446,7 +449,7 @@ export class ControlPlane {
     const payload = asUint8Array(data);
     if (payload.byteLength === 0) return;
     if (!state.dataSocket) return;
-    bufferedRelayWrite(state.dataSocket, payload);
+    relayWrite(socket, state.dataSocket, payload);
   }
 
   private onTcpClientClose(_tunnel: TunnelRecord, socket: any): void {
@@ -463,7 +466,7 @@ export class ControlPlane {
 
   private onTcpClientDrain(socket: any): void {
     // Flush download data queued on this client socket (agent → client direction)
-    flushRelayBuffer(socket);
+    relayDrain(socket);
   }
 
   // ---- Agent data connections (raw TCP pipe) ----
@@ -502,7 +505,7 @@ export class ControlPlane {
       // Flush any data that arrived before the streamId was matched
       const remaining = con.buf.subarray(2 + idLen);
       if (remaining.length > 0) {
-        bufferedRelayWrite(state.socket, remaining);
+        relayWrite(socket, state.socket, remaining);
       }
 
       // Resume external client now that data socket is linked
@@ -516,13 +519,13 @@ export class ControlPlane {
       }
       const payload = asUint8Array(data);
       if (payload.length === 0) return;
-      bufferedRelayWrite(state.socket, payload);
+      relayWrite(socket, state.socket, payload);
     }
   }
 
   private onAgentDataSocketDrain(socket: any): void {
     // Flush upload data queued on this data socket (client → agent direction)
-    flushRelayBuffer(socket);
+    relayDrain(socket);
   }
 
   private onAgentDataSocketClose(socket: any): void {

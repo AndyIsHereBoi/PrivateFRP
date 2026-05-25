@@ -36,48 +36,52 @@ function writeSocket(socket: any, data: Uint8Array): number {
 }
 
 /**
- * Write data to a relay socket with zero-copy partial-write buffering.
- * Uses a chunk list (like control-frame backpressure) to avoid O(n²) merging.
- * On drain, call flushRelayBuffer(socket) to flush remaining chunks.
- * Returns true if all bytes were written, false if some were queued.
+ * Relay data from source to destination socket. On partial write, the unwritten
+ * tail is stored as a single chunk and the source socket is PAUSED to prevent
+ * unbounded buffering. Call relayDrain(dest) on the destination's drain event
+ * to flush the tail and resume the source.
  */
-function bufferedRelayWrite(socket: any, data: Uint8Array): boolean {
-  // If there are already pending chunks, append and return — drain will flush them
-  const pending = (socket as any).__relayPending as Uint8Array[] | undefined;
-  if (pending && pending.length > 0) {
-    pending.push(data);
-    return false;
+function relayWrite(source: any, dest: any, data: Uint8Array): void {
+  // If there's already a pending tail, append to it (shouldn't happen with
+  // proper pause/resume, but handle gracefully without unbounded growth).
+  const tail = (dest as any).__relayChunk as Uint8Array | undefined;
+  if (tail && tail.byteLength > 0) {
+    const merged = new Uint8Array(tail.byteLength + data.byteLength);
+    merged.set(tail, 0);
+    merged.set(data, tail.byteLength);
+    (dest as any).__relayChunk = merged;
+    return;
   }
 
-  const written = writeSocket(socket, data);
-  if (written < 0) return false;
+  const written = writeSocket(dest, data);
+  if (written < 0) return;
   if (written < data.byteLength) {
-    (socket as any).__relayPending = [data.subarray(written)];
-    return false;
+    (dest as any).__relayChunk = data.subarray(written);
+    (dest as any).__relaySource = source;
+    try { source.pause?.(); } catch { /* ignore */ }
   }
-  return true;
 }
 
-/** Call on socket drain to flush queued relay chunks. Each chunk is a subarray
- *  of the original data — no copies were made during buffering. */
-function flushRelayBuffer(socket: any): void {
-  const pending = (socket as any).__relayPending as Uint8Array[] | undefined;
-  if (!pending || pending.length === 0) return;
+/** Call on the DESTINATION socket's drain event. Flushes the single pending
+ *  tail chunk (if any) and resumes the source socket. */
+function relayDrain(dest: any): void {
+  const chunk = (dest as any).__relayChunk as Uint8Array | undefined;
+  if (!chunk || chunk.byteLength === 0) return;
 
-  while (pending.length > 0) {
-    const chunk = pending[0]!;
-    const written = writeSocket(socket, chunk);
-    if (written < 0) {
-      (socket as any).__relayPending = undefined;
-      return;
-    }
-    if (written < chunk.byteLength) {
-      pending[0] = chunk.subarray(written);
-      return;
-    }
-    pending.shift();
+  const written = writeSocket(dest, chunk);
+  if (written < 0) {
+    (dest as any).__relayChunk = undefined;
+    return;
   }
-  (socket as any).__relayPending = undefined;
+  if (written < chunk.byteLength) {
+    (dest as any).__relayChunk = chunk.subarray(written);
+    return;
+  }
+
+  (dest as any).__relayChunk = undefined;
+  const source = (dest as any).__relaySource as any | undefined;
+  (dest as any).__relaySource = undefined;
+  try { source?.resume?.(); } catch { /* ignore */ }
 }
 
 const MAX_SERVER_QUEUE_BYTES = 512 * 1024;
@@ -377,14 +381,14 @@ export class AgentClient {
                 // flush any data that arrived from server before local was ready
                 const pending = (ds as any).__pendingBuf as Uint8Array | undefined;
                 if (pending) {
-                  bufferedRelayWrite(ls, pending);
+                  relayWrite(ds, ls, pending);
                   (ds as any).__pendingBuf = undefined;
                 }
               },
               data: (ls: Socket, data: unknown) => {
                 const bytes = asUint8Array(data);
                 if (bytes.byteLength === 0) return;
-                bufferedRelayWrite(ds, bytes);
+                relayWrite(ls, ds, bytes);
               },
               close: () => {
                 console.log(`[agent] local closed ${payload.streamId}`);
@@ -393,7 +397,7 @@ export class AgentClient {
               },
               drain: () => {
                 const localSock = (ds as any).__local as Socket | undefined;
-                if (localSock) flushRelayBuffer(localSock);
+                if (localSock) relayDrain(localSock);
               },
               error: (_ls: Socket, error: Error) => {
                 console.error('[agent] local tcp error', error);
@@ -423,7 +427,7 @@ export class AgentClient {
           }
           const bytes = asUint8Array(data);
           if (bytes.byteLength === 0) return;
-          bufferedRelayWrite(local, bytes);
+          relayWrite(ds, local, bytes);
         },
         close: (ds: Socket) => {
           console.log(`[agent] data socket closed ${payload.streamId}`);
@@ -446,8 +450,8 @@ export class AgentClient {
             }
             (ds as any).__headerRemaining = undefined;
           }
-          // Flush relay buffer (data from local → server direction)
-          flushRelayBuffer(ds);
+          // Flush pending relay tail (data from local → server direction)
+          relayDrain(ds);
         },
         error: (_ds: Socket, error: Error) => {
           console.error('[agent] data socket error', error);
