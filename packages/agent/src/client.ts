@@ -323,12 +323,29 @@ export class AgentClient {
         this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
 
         // Relay: dataSocket ↔ localSocket. Node.js net.Socket.write() buffers
-        // internally and never drops data — no need to handle return values.
+        // internally and never drops data — we still log first bytes to debug.
+        let loggedAgentToLocal = false;
+        let loggedLocalToAgent = false;
+
         dataSocket.on('data', (chunk: Buffer) => {
+          if (!loggedAgentToLocal) {
+            try {
+              const hex = chunk.slice(0, 512).toString('hex');
+              console.log(`[agent][${payload.streamId}] first agent->local ${hex}`);
+            } catch { /* ignore logging errors */ }
+            loggedAgentToLocal = true;
+          }
           if (localSocket.destroyed) return;
           localSocket.write(chunk);
         });
         localSocket.on('data', (chunk: Buffer) => {
+          if (!loggedLocalToAgent) {
+            try {
+              const hex = chunk.slice(0, 512).toString('hex');
+              console.log(`[agent][${payload.streamId}] first local->agent ${hex}`);
+            } catch { /* ignore logging errors */ }
+            loggedLocalToAgent = true;
+          }
           if (dataSocket.destroyed) return;
           dataSocket.write(chunk);
         });

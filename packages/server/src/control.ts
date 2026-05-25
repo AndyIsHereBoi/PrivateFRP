@@ -122,13 +122,30 @@ export class ControlPlane {
         console.log(`[data] stream ${streamId} established`);
         state.dataSocket = dataSocket;
 
+        let loggedAgentToClient = false;
+        let loggedClientToAgent = false;
+
         // Relay: dataSocket ↔ clientSocket. Node.js net.Socket.write() buffers
-        // internally and never drops data — no return-value handling needed.
+        // internally and never drops data — we still log first bytes to debug.
         dataSocket.on('data', (c: Buffer) => {
+          if (!loggedAgentToClient) {
+            try {
+              const hex = c.slice(0, 512).toString('hex');
+              console.log(`[server][${streamId}] first agent->client ${hex}`);
+            } catch {}
+            loggedAgentToClient = true;
+          }
           if (state!.socket.destroyed) return;
           state!.socket.write(c);
         });
         state.socket.on('data', (c: Buffer) => {
+          if (!loggedClientToAgent) {
+            try {
+              const hex = c.slice(0, 512).toString('hex');
+              console.log(`[server][${streamId}] first client->agent ${hex}`);
+            } catch {}
+            loggedClientToAgent = true;
+          }
           if (dataSocket.destroyed) return;
           dataSocket.write(c);
         });
@@ -137,8 +154,14 @@ export class ControlPlane {
         dataSocket.on('end', () => { if (!state!.socket.destroyed) state!.socket.end(); });
         state.socket.on('end', () => { if (!dataSocket.destroyed) dataSocket.end(); });
 
-        // Flush any remaining header bytes, then resume client
-        if (remaining.length > 0) state.socket.write(remaining);
+        // Flush any remaining header bytes (first N bytes logged), then resume client
+        if (remaining.length > 0) {
+          try {
+            const hexRem = remaining.slice(0, 512).toString('hex');
+            console.log(`[data] stream ${streamId} header remaining ${remaining.length} bytes -> ${hexRem}`);
+          } catch {}
+          state.socket.write(remaining);
+        }
         state.socket.resume();
 
         // Cleanup when either side closes
