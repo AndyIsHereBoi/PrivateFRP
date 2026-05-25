@@ -65,6 +65,50 @@ function writeSocket(socket: any, data: Uint8Array): number {
   return -1;
 }
 
+/**
+ * Write data to a relay socket with zero-copy partial-write buffering.
+ * Uses a chunk list (like control-frame backpressure) to avoid O(n²) merging.
+ * On drain, call flushRelayBuffer(socket) to flush remaining chunks.
+ * Returns true if all bytes were written, false if some were queued.
+ */
+function bufferedRelayWrite(socket: any, data: Uint8Array): boolean {
+  const pending = (socket as any).__relayPending as Uint8Array[] | undefined;
+  if (pending && pending.length > 0) {
+    pending.push(data);
+    return false;
+  }
+
+  const written = writeSocket(socket, data);
+  if (written < 0) return false;
+  if (written < data.byteLength) {
+    (socket as any).__relayPending = [data.subarray(written)];
+    return false;
+  }
+  return true;
+}
+
+/** Call on socket drain to flush queued relay chunks. Each chunk is a subarray
+ *  of the original data — no copies were made during buffering. */
+function flushRelayBuffer(socket: any): void {
+  const pending = (socket as any).__relayPending as Uint8Array[] | undefined;
+  if (!pending || pending.length === 0) return;
+
+  while (pending.length > 0) {
+    const chunk = pending[0]!;
+    const written = writeSocket(socket, chunk);
+    if (written < 0) {
+      (socket as any).__relayPending = undefined;
+      return;
+    }
+    if (written < chunk.byteLength) {
+      pending[0] = chunk.subarray(written);
+      return;
+    }
+    pending.shift();
+  }
+  (socket as any).__relayPending = undefined;
+}
+
 export class ControlPlane {
   private readonly agentConnections = new Map<string, AgentConnectionState>();
   private readonly tcpStreams = new Map<string, TcpClientState>();
@@ -402,7 +446,7 @@ export class ControlPlane {
     const payload = asUint8Array(data);
     if (payload.byteLength === 0) return;
     if (!state.dataSocket) return;
-    writeSocket(state.dataSocket, payload);
+    bufferedRelayWrite(state.dataSocket, payload);
   }
 
   private onTcpClientClose(_tunnel: TunnelRecord, socket: any): void {
@@ -417,8 +461,15 @@ export class ControlPlane {
     this.tcpStreams.delete(streamId);
   }
 
-  private onTcpClientDrain(_socket: any): void {
-    // Bun handles buffering internally — no app-level pending queue needed
+  private onTcpClientDrain(socket: any): void {
+    // Flush any queued relay data to the agent data socket
+    const streamId = socket.__privateFrpStreamId as string | undefined;
+    if (streamId) {
+      const state = this.tcpStreams.get(streamId);
+      if (state?.dataSocket) {
+        flushRelayBuffer(state.dataSocket);
+      }
+    }
   }
 
   // ---- Agent data connections (raw TCP pipe) ----
@@ -457,13 +508,13 @@ export class ControlPlane {
       // Flush any data that arrived before the streamId was matched
       const remaining = con.buf.subarray(2 + idLen);
       if (remaining.length > 0) {
-        writeSocket(state.socket, remaining);
+        bufferedRelayWrite(state.socket, remaining);
       }
 
       // Resume external client now that data socket is linked
       try { state.socket.resume?.(); } catch {}
     } else {
-      // Raw tunnel data from agent → write to external client (Bun handles buffering)
+      // Raw tunnel data from agent → write to external client
       const state = this.tcpStreams.get(con.socket.__dataStreamId);
       if (!state) {
         try { socket.end?.(); } catch {}
@@ -471,12 +522,19 @@ export class ControlPlane {
       }
       const payload = asUint8Array(data);
       if (payload.length === 0) return;
-      writeSocket(state.socket, payload);
+      bufferedRelayWrite(state.socket, payload);
     }
   }
 
-  private onAgentDataSocketDrain(_socket: any): void {
-    // Bun handles buffering internally — no app-level pending queue needed
+  private onAgentDataSocketDrain(socket: any): void {
+    // Flush any queued relay data to the external client socket
+    const streamId = (socket as any).__dataStreamId as string | undefined;
+    if (streamId) {
+      const state = this.tcpStreams.get(streamId);
+      if (state) {
+        flushRelayBuffer(state.socket);
+      }
+    }
   }
 
   private onAgentDataSocketClose(socket: any): void {
