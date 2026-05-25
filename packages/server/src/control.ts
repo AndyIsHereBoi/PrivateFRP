@@ -11,7 +11,6 @@ type TcpClientState = {
   agentId: string;
   socket: any;             // external client socket
   dataSocket: any | null;  // agent data socket (raw pipe)
-  paused: boolean;         // client socket paused due to dataSocket backpressure
   pendingBuf: Uint8Array[]; // buffered until dataSocket connects
 };
 
@@ -110,11 +109,7 @@ export class ControlPlane {
         },
         data: (socket: any, data: unknown) => this.onAgentDataSocketData(socket, data),
         close: (socket: any) => this.onAgentDataSocketClose(socket),
-        drain: (socket: any) => {
-          const fn = (socket as any).__dataDrain as (() => void) | undefined;
-          fn?.();
-        },
-        error: (_socket: any, error: Error) => {
+        drain: () => { /* noop */ },        error: (_socket: any, error: Error) => {
           console.error('[data] socket error', error);
         }
       }
@@ -300,14 +295,7 @@ export class ControlPlane {
       socket: {
         open: (socket: any) => this.onTcpClientOpen(tunnel, socket),
         data: (socket: any, data: unknown) => this.onTcpClientData(tunnel, socket, data),
-        close: (socket: any) => this.onTcpClientClose(tunnel, socket),
-        drain: (socket: any) => {
-          const streamId = socket.__privateFrpStreamId as string | undefined;
-          if (!streamId) return;
-          const state = this.tcpStreams.get(streamId);
-          if (!state?.dataSocket) return;
-          try { state.dataSocket.resume?.(); } catch {}
-        }
+        close: (socket: any) => this.onTcpClientClose(tunnel, socket)
       }
     });
 
@@ -388,7 +376,6 @@ export class ControlPlane {
       agentId,
       socket,
       dataSocket: null,
-      paused: false,
       pendingBuf: []
     };
     this.tcpStreams.set(streamId, state);
@@ -418,13 +405,7 @@ export class ControlPlane {
       return;
     }
 
-    const n = state.dataSocket.write(payload);
-    if (n < 0 || (n >= 0 && n < payload.byteLength)) {
-      if (!state.paused) {
-        state.paused = true;
-        try { state.socket.pause?.(); } catch {}
-      }
-    }
+    state.dataSocket.write(payload);
   }
 
   private onTcpClientClose(_tunnel: TunnelRecord, socket: any): void {
@@ -481,14 +462,6 @@ export class ControlPlane {
         socket.write(buf);
       }
       state.pendingBuf = [];
-
-      // Data socket drain → resume client socket if paused
-      (socket as any).__dataDrain = () => {
-        if (state.paused) {
-          state.paused = false;
-          try { state.socket.resume?.(); } catch {}
-        }
-      };
     } else {
       // Raw tunnel data from agent → write to external client
       const state = this.tcpStreams.get(con.socket.__dataStreamId);
@@ -498,11 +471,7 @@ export class ControlPlane {
       }
       const payload = asUint8Array(data);
       if (payload.length === 0) return;
-      const n = state.socket.write(payload);
-      if (n < 0 || (n >= 0 && n < payload.length)) {
-        // Client socket full — pause data socket reads
-        try { socket.pause?.(); } catch {}
-      }
+      state.socket.write(payload);
     }
   }
 
