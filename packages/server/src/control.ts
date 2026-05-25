@@ -91,7 +91,7 @@ export class ControlPlane {
       }
     });
 
-    await this.refreshTunnelListeners();
+    // Don't create listeners on startup - wait for agent to connect
   }
 
   async stop(): Promise<void> {
@@ -203,6 +203,11 @@ export class ControlPlane {
       const agent = tunnel.agentId ? this.agentConnections.get(tunnel.agentId) : null;
       if (!agent && tunnel.agentId) {
         console.log(`[tunnel] skipping ${tunnel.name} (agent: ${tunnel.agentId}) - agent not connected`);
+        continue;
+      }
+      // Also skip if no agent is assigned
+      if (!tunnel.agentId) {
+        console.log(`[tunnel] skipping ${tunnel.name} - no agent assigned`);
         continue;
       }
       
@@ -598,6 +603,8 @@ export class ControlPlane {
           }
         }));
         this.pushConfigToAgent(agent.id);
+        // Create listeners for tunnels assigned to this agent
+        void this.refreshTunnelListeners();
         this.broadcastDashboard();
         console.log(`[agent] connected ${agent.id} (${agent.name}) - ${String((socket as any).remoteAddress ?? 'unknown')}`);
         return;
