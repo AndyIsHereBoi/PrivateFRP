@@ -297,7 +297,6 @@ export class AgentClient {
 
     console.log(`[agent] opening data pipe ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`);
 
-    // Connect data socket to server first, then local service.
     // Uses Node.js net.Socket + pipe() — equivalent to playit-agent's tokio write_all loop.
     const dataSocket = net.createConnection({
       host: this.config.serverHost,
@@ -305,45 +304,67 @@ export class AgentClient {
       noDelay: Boolean(this.config.dataTcpNoDelay)
     });
 
-    // Send streamId header immediately
-    const idBytes = Buffer.from(payload.streamId, 'utf8');
-    const header = Buffer.alloc(2 + idBytes.length);
-    header.writeUInt16BE(idBytes.length, 0);
-    idBytes.copy(header, 2);
-    dataSocket.write(header);
+    // Wait for data socket to connect before writing header or connecting local.
+    // This ensures the streamId header is the FIRST bytes the server sees,
+    // and that dataSocket is ready before we pipe anything to it.
+    //
+    // Buffer any data that arrives before the pipe is set up (the window between
+    // the server linking its pipe and us linking ours). Minimal — only covers the
+    // localSocket connect latency, typically < 1ms on localhost.
+    const prePipeBuf: Buffer[] = [];
+    const onEarlyData = (chunk: Buffer) => { prePipeBuf.push(chunk); };
+    dataSocket.on('data', onEarlyData);
 
-    // Now connect to local service and pipe
-    const localSocket = net.createConnection({
-      host: tunnel.targetHost,
-      port: tunnel.targetPort,
-      noDelay: Boolean(this.config.dataTcpNoDelay)
-    });
+    dataSocket.on('connect', () => {
+      // Write streamId header on a connected socket — guaranteed first bytes
+      const idBytes = Buffer.from(payload.streamId, 'utf8');
+      const header = Buffer.alloc(2 + idBytes.length);
+      header.writeUInt16BE(idBytes.length, 0);
+      idBytes.copy(header, 2);
+      dataSocket.write(header);
 
-    localSocket.on('connect', () => {
-      console.log(`[agent] local connected ${payload.streamId}`);
-      this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
+      // Now connect to local service
+      const localSocket = net.createConnection({
+        host: tunnel.targetHost,
+        port: tunnel.targetPort,
+        noDelay: Boolean(this.config.dataTcpNoDelay)
+      });
 
-      // Pipe both directions — pipe() handles all backpressure internally
-      dataSocket.pipe(localSocket, { end: true });
-      localSocket.pipe(dataSocket, { end: true });
-    });
+      localSocket.on('connect', () => {
+        console.log(`[agent] local connected ${payload.streamId}`);
+        this.tcpStreams.set(payload.streamId, { streamId: payload.streamId, tunnelId: payload.tunnelId, socket: localSocket });
 
-    localSocket.on('error', (err: Error) => {
-      console.error(`[agent] local connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
-      try { dataSocket.destroy(); } catch {}
+        // Stop the pre-pipe buffer
+        dataSocket.removeListener('data', onEarlyData);
+
+        // Forward any data that arrived during setup
+        for (const chunk of prePipeBuf) {
+          localSocket.write(chunk);
+        }
+        prePipeBuf.length = 0;
+
+        // Pipe both directions — pipe() handles all backpressure internally
+        dataSocket.pipe(localSocket, { end: true });
+        localSocket.pipe(dataSocket, { end: true });
+      });
+
+      localSocket.on('error', (err: Error) => {
+        console.error(`[agent] local connect failed ${payload.streamId} -> ${tunnel.targetHost}:${tunnel.targetPort}`, err);
+        try { dataSocket.destroy(); } catch {}
+      });
+
+      localSocket.on('close', () => {
+        console.log(`[agent] local closed ${payload.streamId}`);
+        this.tcpStreams.delete(payload.streamId);
+      });
     });
 
     dataSocket.on('error', (err: Error) => {
-      console.error('[agent] data socket error', err);
+      console.error(`[agent] data connect failed ${payload.streamId}`, err);
     });
 
-    // Cleanup when either side closes
     dataSocket.on('close', () => {
       console.log(`[agent] data socket closed ${payload.streamId}`);
-      this.tcpStreams.delete(payload.streamId);
-    });
-    localSocket.on('close', () => {
-      console.log(`[agent] local closed ${payload.streamId}`);
       this.tcpStreams.delete(payload.streamId);
     });
   }

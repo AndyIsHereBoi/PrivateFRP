@@ -109,7 +109,12 @@ export class ControlPlane {
         const streamId = headerBuf.subarray(2, 2 + idLen).toString('utf8');
         const remaining = headerBuf.subarray(2 + idLen);
 
+        // Remove header listener; socket enters paused mode.
+        // Add a temporary buffer to catch data arriving during pipe setup.
         dataSocket.removeListener('data', onHeaderData);
+        const prePipeBuf: Buffer[] = [];
+        const onEarlyData = (c: Buffer) => { prePipeBuf.push(c); };
+        dataSocket.on('data', onEarlyData);
 
         const state = this.tcpStreams.get(streamId);
         if (!state) {
@@ -121,9 +126,15 @@ export class ControlPlane {
         console.log(`[data] stream ${streamId} established`);
         state.dataSocket = dataSocket;
 
-        // Pipe both directions — pipe() handles all backpressure internally:
-        // pauses source when dest is full, resumes on drain. Zero app-level buffering.
+        // Forward any data that arrived before/after the header
         if (remaining.length > 0) state.socket.write(remaining);
+        for (const c of prePipeBuf) {
+          state.socket.write(c);
+        }
+        prePipeBuf.length = 0;
+
+        // Remove temp listener, set up pipe (pipe adds its own data listener)
+        dataSocket.removeListener('data', onEarlyData);
         dataSocket.pipe(state.socket, { end: true });
         state.socket.pipe(dataSocket, { end: true });
 
