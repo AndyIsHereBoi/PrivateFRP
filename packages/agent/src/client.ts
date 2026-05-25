@@ -322,18 +322,32 @@ export class AgentClient {
                 // Pipe: data socket ↔ local socket
                 (ds as any).__local = ls;
                 (ls as any).__remote = ds;
+                // Flush any buffered data from server
+                const pending = (ds as any).__pendingBuf as Uint8Array[] | undefined;
+                if (pending) {
+                  for (const buf of pending) {
+                    ls.write(buf);
+                  }
+                  (ds as any).__pendingBuf = [];
+                }
               },
               data: (_ls: Socket, data: unknown) => {
                 const bytes = asUint8Array(data);
                 if (bytes.byteLength === 0) return;
-                ds.write(bytes);
+                const n = ds.write(bytes);
+                if (n < 0 || (n >= 0 && n < bytes.byteLength)) {
+                  try { _ls.pause?.(); } catch {}
+                }
               },
               close: () => {
                 console.log(`[agent] local closed ${payload.streamId}`);
                 this.tcpStreams.delete(payload.streamId);
                 try { ds.end?.(); } catch {}
               },
-              drain: () => { /* noop */ },
+              drain: () => {
+                // Local socket send buffer cleared — resume data socket
+                try { ds.resume?.(); } catch {}
+              },
               error: (_ls: Socket, error: Error) => {
                 console.error('[agent] local tcp error', error);
               }
@@ -346,10 +360,17 @@ export class AgentClient {
         },
         data: (ds: Socket, data: unknown) => {
           const local = (ds as any).__local as Socket | undefined;
-          if (!local) return;
+          if (!local) {
+            if (!(ds as any).__pendingBuf) (ds as any).__pendingBuf = [];
+            (ds as any).__pendingBuf.push(asUint8Array(data));
+            return;
+          }
           const bytes = asUint8Array(data);
           if (bytes.byteLength === 0) return;
-          local.write(bytes);
+          const n = local.write(bytes);
+          if (n < 0 || (n >= 0 && n < bytes.byteLength)) {
+            try { ds.pause?.(); } catch {}
+          }
         },
         close: (s: Socket) => {
           console.log(`[agent] data socket closed ${payload.streamId}`);
@@ -357,7 +378,13 @@ export class AgentClient {
           this.tcpStreams.delete(payload.streamId);
           try { local?.end?.(); } catch {}
         },
-        drain: () => { /* noop */ },
+        drain: (s: Socket) => {
+          // Data socket send buffer cleared — resume local socket if paused
+          const local = (s as any).__local as Socket | undefined;
+          if (local) {
+            try { local.resume?.(); } catch {}
+          }
+        },
         error: (_ds: Socket, error: Error) => {
           console.error('[agent] data socket error', error);
         }

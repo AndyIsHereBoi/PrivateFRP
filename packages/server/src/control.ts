@@ -109,7 +109,8 @@ export class ControlPlane {
         },
         data: (socket: any, data: unknown) => this.onAgentDataSocketData(socket, data),
         close: (socket: any) => this.onAgentDataSocketClose(socket),
-        drain: () => { /* noop */ },        error: (_socket: any, error: Error) => {
+        drain: () => { /* noop — tunnel listener drain resumes data socket */ },
+        error: (_socket: any, error: Error) => {
           console.error('[data] socket error', error);
         }
       }
@@ -295,7 +296,15 @@ export class ControlPlane {
       socket: {
         open: (socket: any) => this.onTcpClientOpen(tunnel, socket),
         data: (socket: any, data: unknown) => this.onTcpClientData(tunnel, socket, data),
-        close: (socket: any) => this.onTcpClientClose(tunnel, socket)
+        close: (socket: any) => this.onTcpClientClose(tunnel, socket),
+        drain: (socket: any) => {
+          // Client socket buffer cleared — resume data socket reads
+          const sid = socket.__privateFrpStreamId as string | undefined;
+          if (!sid) return;
+          const st = this.tcpStreams.get(sid);
+          if (!st?.dataSocket) return;
+          try { st.dataSocket.resume?.(); } catch {}
+        }
       }
     });
 
@@ -471,7 +480,11 @@ export class ControlPlane {
       }
       const payload = asUint8Array(data);
       if (payload.length === 0) return;
-      state.socket.write(payload);
+      const n = state.socket.write(payload);
+      if (n < 0 || (n >= 0 && n < payload.length)) {
+        // Client socket full — pause the data socket (source of this data)
+        try { socket.pause?.(); } catch {}
+      }
     }
   }
 
