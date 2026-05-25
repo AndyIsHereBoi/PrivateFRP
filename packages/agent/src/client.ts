@@ -391,13 +391,18 @@ export class AgentClient {
         data: (ds: Socket, data: unknown) => {
           const local = (ds as any).__local as Socket | undefined;
           if (!local) {
-            // local not ready yet; buffer one chunk then pause ds
-            if (!(ds as any).__pendingBuf) {
-              (ds as any).__pendingBuf = { buf: asUint8Array(data), offset: 0 };
-              try { ds.pause?.(); } catch {}
-              return;
+            // local not ready yet; merge into single pending buffer, then pause ds
+            const chunk = asUint8Array(data);
+            const prev = (ds as any).__pendingBuf as { buf: Uint8Array; offset: number } | undefined;
+            if (!prev) {
+              (ds as any).__pendingBuf = { buf: chunk, offset: 0 };
+            } else {
+              // merge new chunk onto existing buffer
+              const merged = new Uint8Array(prev.buf.length + chunk.length);
+              merged.set(prev.buf, 0);
+              merged.set(chunk, prev.buf.length);
+              (ds as any).__pendingBuf = { buf: merged, offset: prev.offset };
             }
-            // already have a pending chunk; pause to avoid unbounded growth
             try { ds.pause?.(); } catch {}
             return;
           }

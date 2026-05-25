@@ -422,7 +422,16 @@ export class ControlPlane {
       return;
     }
     if (written < payload.byteLength) {
-      state.pendingAgentWrite = { buf: payload, offset: written };
+      if (state.pendingAgentWrite) {
+        const old = state.pendingAgentWrite;
+        const oldRemaining = old.buf.subarray(old.offset);
+        const merged = new Uint8Array(oldRemaining.length + payload.byteLength - written);
+        merged.set(oldRemaining, 0);
+        merged.set(payload.subarray(written), oldRemaining.length);
+        state.pendingAgentWrite = { buf: merged, offset: 0 };
+      } else {
+        state.pendingAgentWrite = { buf: payload, offset: written };
+      }
       try { state.socket.pause?.(); } catch {}
       return;
     }
@@ -554,8 +563,18 @@ export class ControlPlane {
         return;
       }
       if (written < payload.length) {
-        // the external client can't accept all data; keep a single pending chunk and pause agent socket
-        state.pendingClientWrite = { buf: payload, offset: written };
+        // the external client can't accept all data; merge with any existing pending chunk
+        if (state.pendingClientWrite) {
+          // merge new chunk onto existing pending buffer
+          const old = state.pendingClientWrite;
+          const oldRemaining = old.buf.subarray(old.offset);
+          const merged = new Uint8Array(oldRemaining.length + payload.length - written);
+          merged.set(oldRemaining, 0);
+          merged.set(payload.subarray(written), oldRemaining.length);
+          state.pendingClientWrite = { buf: merged, offset: 0 };
+        } else {
+          state.pendingClientWrite = { buf: payload, offset: written };
+        }
         try { socket.pause?.(); } catch {}
         return;
       }
