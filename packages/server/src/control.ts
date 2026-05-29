@@ -639,6 +639,17 @@ export class ControlPlane {
         }
         return;
       }
+      case FRAME_TYPES.UDP_DATA: {
+        const payload = frame.payload as { sessionId?: string; data?: string; peerAddress?: string; peerPort?: number } | undefined;
+        if (!payload?.sessionId || !payload?.data) return;
+        const session = this.udpSessions.get(payload.sessionId);
+        if (!session) return;
+        try {
+          const buf = Buffer.from(payload.data, 'base64');
+          session.socket.send(buf, 0, buf.length, session.peerPort, session.peerAddress);
+        } catch { /* ignore send errors */ }
+        return;
+      }
       default:
         return;
     }

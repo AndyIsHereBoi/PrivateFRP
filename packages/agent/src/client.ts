@@ -270,6 +270,17 @@ export class AgentClient {
         this.openLocalUdpSession(payload);
         return;
       }
+      case FRAME_TYPES.UDP_DATA: {
+        const payload = frame.payload as { sessionId?: string; data?: string; peerAddress?: string; peerPort?: number } | undefined;
+        if (!payload?.sessionId || !payload?.data) return;
+        const session = this.udpSessions.get(payload.sessionId);
+        if (!session) return;
+        try {
+          const buf = Buffer.from(payload.data, 'base64');
+          session.socket.send(buf, 0, buf.length, session.targetPort, session.targetHost);
+        } catch { /* ignore send errors */ }
+        return;
+      }
       case FRAME_TYPES.STREAM_CLOSE: {
         const payload = frame.payload as { streamId?: string } | undefined;
         if (!payload?.streamId) return;
