@@ -56,9 +56,12 @@ jobs:
           SHORT=$(git rev-parse --short HEAD)
           echo "Building ${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }} from commit ${SHORT}"
           docker buildx build --file "${{ matrix.dockerfile }}" \
+            --no-cache \
+            --pull \
             --build-arg "BUILD_COMMIT=${SHORT}" \
             --build-arg "BUILD_VERSION=${{ env.RELEASE_NUMBER }}" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}" \
+            --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${SHORT}" \
             --push .
 
   release:
