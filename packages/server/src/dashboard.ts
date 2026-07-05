@@ -1,6 +1,7 @@
 import { COOKIE_NAMES } from '@privatefrp/shared';
 import type { ServerRuntimeConfig } from '@privatefrp/shared';
 import type { ControlPlane } from './control';
+import type { ServerStore } from './store';
 
 function jsonResponse(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data, null, 2), {
@@ -22,6 +23,17 @@ function textResponse(text: string, init?: ResponseInit): Response {
   });
 }
 
+const COOKIE_OPTIONS =
+  'Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=10368000';
+
+function getSessionCookie(value: string) {
+  return `${COOKIE_NAMES.DASHBOARD_SESSION}=${value}; ${COOKIE_OPTIONS}`;
+}
+
+function getClearCookie() {
+  return `${COOKIE_NAMES.DASHBOARD_SESSION}=; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=0`;
+}
+
 export class DashboardServer {
   private readonly sockets = new Set<any>();
   private server: any = null;
@@ -31,6 +43,7 @@ export class DashboardServer {
   constructor(
     private readonly config: ServerRuntimeConfig,
     private readonly control: ControlPlane,
+    private readonly store: ServerStore,
     private readonly assetBasePath: string
   ) {
     this.serverVersion = process.env.BUILD_VERSION || 'dev';
@@ -83,15 +96,23 @@ export class DashboardServer {
     if (url.pathname === '/tunnels.html') {
       return await this.serveHtml('tunnels.html');
     }
+    if (url.pathname === '/account.html') {
+      return await this.serveHtml('account.html');
+    }
     if (url.pathname === '/login') {
       return req.method === 'GET' ? await this.serveHtml('login.html') : await this.handleLogin(req);
     }
     if (url.pathname === '/logout' && req.method === 'POST') {
+      const cookie = req.headers.get('cookie') || '';
+      const match = cookie.match(new RegExp(`${COOKIE_NAMES.DASHBOARD_SESSION}=([^;]+)`));
+      if (match && match[1]) {
+        this.store.deleteSessionByToken(match[1]);
+      }
       return new Response(null, {
         status: 302,
         headers: {
           location: '/login',
-          'set-cookie': `${COOKIE_NAMES.DASHBOARD_SESSION}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
+          'set-cookie': getClearCookie()
         }
       });
     }
@@ -120,11 +141,15 @@ export class DashboardServer {
       });
     }
 
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null;
+    const userAgent = req.headers.get('user-agent') || null;
+    const token = this.store.createSession(ip, userAgent);
+
     return new Response(null, {
       status: 302,
       headers: {
         location: '/agents.html',
-        'set-cookie': `${COOKIE_NAMES.DASHBOARD_SESSION}=session; Path=/; HttpOnly; SameSite=Lax`
+        'set-cookie': getSessionCookie(token)
       }
     });
   }
@@ -170,6 +195,14 @@ export class DashboardServer {
     if (url.pathname.match(/^\/api\/tunnels\/[^/]+$/) && req.method === 'DELETE') {
       const tunnelId = url.pathname.split('/')[3] || '';
       this.control.deleteTunnel(tunnelId);
+      return jsonResponse({ ok: true });
+    }
+    if (url.pathname === '/api/account/sessions' && req.method === 'GET') {
+      return jsonResponse(this.store.listSessions());
+    }
+    if (url.pathname.match(/^\/api\/account\/sessions\/[^/]+\/delete$/) && req.method === 'POST') {
+      const sessionId = url.pathname.split('/')[4] || '';
+      this.store.deleteSession(sessionId);
       return jsonResponse({ ok: true });
     }
 
@@ -220,7 +253,9 @@ export class DashboardServer {
 
   private isAuthorized(req: Request): boolean {
     const cookie = req.headers.get('cookie') || '';
-    return cookie.includes(`${COOKIE_NAMES.DASHBOARD_SESSION}=`);
+    const match = cookie.match(new RegExp(`${COOKIE_NAMES.DASHBOARD_SESSION}=([^;]+)`));
+    if (!match || !match[1]) return false;
+    return this.store.validateSession(match[1]) !== null;
   }
 
   private async serveHtml(fileName: string, options: { loginError?: string; status?: number } = {}): Promise<Response> {
@@ -247,13 +282,27 @@ export class DashboardServer {
 
   websocket = {
     open: (socket: any) => {
-      this.sockets.add(socket);
-      socket.send(JSON.stringify({ reqId: 'boot', ok: true, data: { ready: true } }));
+      const cookie = (socket.data?.headers?.cookie as string) || '';
+      const match = cookie.match(new RegExp(`${COOKIE_NAMES.DASHBOARD_SESSION}=([^;]+)`));
+      const authed = match?.[1] ? this.store.validateSession(match[1]) !== null : false;
+      (socket as any).__privateFrpAuthed = authed;
+      if (authed) {
+        this.sockets.add(socket);
+        socket.send(JSON.stringify({ reqId: 'boot', ok: true, data: { ready: true } }));
+      } else {
+        socket.send(JSON.stringify({ reqId: 'boot', ok: false, error: 'unauthorized' }));
+        try { socket.close(); } catch {}
+      }
     },
     close: (socket: any) => {
       this.sockets.delete(socket);
     },
     message: (socket: any, message: string | Buffer) => {
+      if (!(socket as any).__privateFrpAuthed) {
+        socket.send(JSON.stringify({ reqId: '', ok: false, error: 'unauthorized' }));
+        return;
+      }
+
       let request: { reqId?: string; type?: string; payload?: unknown } | null = null;
       try {
         request = JSON.parse(String(message));
@@ -265,10 +314,6 @@ export class DashboardServer {
 
       const reqId = String(request.reqId || '');
       if (!reqId) return;
-      if (!this.isSocketAuthorized(socket)) {
-        socket.send(JSON.stringify({ reqId, ok: false, error: 'unauthorized' }));
-        return;
-      }
 
       try {
         if (request.type === 'agents') {
@@ -289,8 +334,4 @@ export class DashboardServer {
       }
     }
   };
-
-  private isSocketAuthorized(_socket: any): boolean {
-    return true;
-  }
 }

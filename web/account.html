@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PrivateFRP - Account</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-public-ip="YOUR_PUBLIC_IP">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-left">
+        <div class="brand">PrivateFRP</div>
+        <div class="tabs">
+          <a class="tab" href="agents.html">Agents</a>
+          <a class="tab" href="tunnels.html">Tunnels</a>
+          <a class="tab active" href="account.html">Account</a>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="public-ip-wrap">
+          <span class="public-ip-label">Public IP</span>
+          <code class="public-ip-value" id="public-ip-value">YOUR_PUBLIC_IP</code>
+          <button class="btn-copy" id="copy-public-ip-btn" type="button">Copy</button>
+        </div>
+        <div class="version-wrap">
+          <span class="version-label">v</span>
+          <code class="version-value" id="version-value">SERVER_VERSION</code>
+        </div>
+        <form method="POST" action="/logout" style="display:inline">
+          <button class="btn btn-danger" type="submit">Sign Out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+
+  <div id="toast-wrap" class="toast-wrap" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="container">
+    <h1>Account</h1>
+    <p class="subtitle">Active dashboard sessions</p>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:20%">IP Address</th>
+          <th style="width:35%">User Agent</th>
+          <th style="width:20%">Created</th>
+          <th style="width:15%">Last Used</th>
+          <th style="width:10%"></th>
+        </tr>
+      </thead>
+      <tbody id="sessions-tbody">
+        <tr><td colspan="5" style="color:#64748b;text-align:center">No active sessions</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script src="common.js"></script>
+  <script>
+    async function refreshSessions() {
+      try {
+        const res = await fetch('/api/account/sessions', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const sessions = await res.json();
+        const tbody = document.getElementById('sessions-tbody');
+        if (!sessions.length) {
+          tbody.innerHTML = '<tr><td colspan="5" style="color:#64748b;text-align:center">No active sessions</td></tr>';
+          return;
+        }
+        tbody.innerHTML = sessions.map(s => {
+          const created = new Date(s.createdAt).toLocaleString();
+          const lastUsed = new Date(s.lastUsedAt).toLocaleString();
+          return `<tr>
+            <td><code>${esc(s.ipAddress || '\u2014')}</code></td>
+            <td style="font-size:0.82rem;word-break:break-all">${esc(s.userAgent || '\u2014')}</td>
+            <td>${created}</td>
+            <td>${lastUsed}</td>
+            <td><button class="btn btn-danger btn-compact" onclick="deleteSession('${esc(s.id)}')" title="Delete session">🗑</button></td>
+          </tr>`;
+        }).join('');
+      } catch (_) {}
+    }
+
+    async function deleteSession(id) {
+      if (!confirm('Delete this session?')) return;
+      const res = await fetch('/api/account/sessions/' + encodeURIComponent(id) + '/delete', { method: 'POST', credentials: 'same-origin' });
+      if (res.ok) { await refreshSessions(); }
+      else { window.showToast('Failed to delete session'); }
+    }
+
+    refreshSessions();
+    setInterval(refreshSessions, 5000);
+  </script>
+</body>
+</html>

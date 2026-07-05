@@ -15,7 +15,7 @@ export async function startServer(): Promise<void> {
   let dashboard!: DashboardServer;
 
   const control = new ControlPlane(config, store, () => dashboard?.notify(), process.cwd());
-  dashboard = new DashboardServer(config, control, process.cwd());
+  dashboard = new DashboardServer(config, control, store, process.cwd());
 
   await control.start();
   dashboard.start();

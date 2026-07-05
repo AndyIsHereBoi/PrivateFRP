@@ -232,4 +232,68 @@ export class ServerStore {
   listTunnelsForAgent(agentId: string): TunnelRecord[] {
     return this.listTunnels().filter(tunnel => tunnel.enabled && tunnel.agentId === agentId);
   }
+
+  // ---- Sessions ----
+
+  private readonly SESSION_TTL_MS = 120 * 24 * 60 * 60 * 1000; // 120 days
+
+  createSession(ipAddress: string | null, userAgent: string | null): string {
+    const token = randomSecret(32);
+    const tokenHash = hashSecret(token);
+    const now = nowMs();
+    const id = randomId('sess_');
+    this.db.query(`
+      INSERT INTO sessions (id, token_hash, ip_address, user_agent, created_at, last_used_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, tokenHash, ipAddress, userAgent, now, now);
+    return token;
+  }
+
+  validateSession(token: string): { id: string; ipAddress: string | null; userAgent: string | null; createdAt: number; lastUsedAt: number } | null {
+    const tokenHash = hashSecret(token);
+    const row = this.db.query(`
+      SELECT id, ip_address as ipAddress, user_agent as userAgent,
+             created_at as createdAt, last_used_at as lastUsedAt
+      FROM sessions WHERE token_hash = ?
+    `).get(tokenHash) as any;
+    if (!row) return null;
+
+    const age = nowMs() - Number(row.lastUsedAt);
+    if (age > this.SESSION_TTL_MS) {
+      this.db.query(`DELETE FROM sessions WHERE id = ?`).run(row.id);
+      return null;
+    }
+
+    this.db.query(`UPDATE sessions SET last_used_at = ? WHERE id = ?`).run(nowMs(), row.id);
+    return {
+      id: String(row.id),
+      ipAddress: row.ipAddress === null || row.ipAddress === undefined ? null : String(row.ipAddress),
+      userAgent: row.userAgent === null || row.userAgent === undefined ? null : String(row.userAgent),
+      createdAt: Number(row.createdAt),
+      lastUsedAt: Number(row.lastUsedAt)
+    };
+  }
+
+  deleteSession(id: string): void {
+    this.db.query(`DELETE FROM sessions WHERE id = ?`).run(id);
+  }
+
+  deleteSessionByToken(token: string): void {
+    const tokenHash = hashSecret(token);
+    this.db.query(`DELETE FROM sessions WHERE token_hash = ?`).run(tokenHash);
+  }
+
+  listSessions(): Array<{ id: string; ipAddress: string | null; userAgent: string | null; createdAt: number; lastUsedAt: number }> {
+    return this.db.query(`
+      SELECT id, ip_address as ipAddress, user_agent as userAgent,
+             created_at as createdAt, last_used_at as lastUsedAt
+      FROM sessions ORDER BY last_used_at DESC
+    `).all().map((row: any) => ({
+      id: String(row.id),
+      ipAddress: row.ipAddress === null || row.ipAddress === undefined ? null : String(row.ipAddress),
+      userAgent: row.userAgent === null || row.userAgent === undefined ? null : String(row.userAgent),
+      createdAt: Number(row.createdAt),
+      lastUsedAt: Number(row.lastUsedAt)
+    }));
+  }
 }
