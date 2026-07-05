@@ -86,7 +86,7 @@ export class DashboardServer {
   private async handleRequest(req: Request, server: any): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === '/ws/dashboard') {
-      const upgraded = server.upgrade(req, { data: {} });
+      const upgraded = server.upgrade(req, { data: { cookie: req.headers.get('cookie') || '' } });
       return upgraded ? new Response(null, { status: 101 }) : textResponse('upgrade failed', { status: 400 });
     }
 
@@ -282,7 +282,7 @@ export class DashboardServer {
 
   websocket = {
     open: (socket: any) => {
-      const cookie = (socket.data?.headers?.cookie as string) || '';
+      const cookie = (socket.data?.cookie as string) || '';
       const match = cookie.match(new RegExp(`${COOKIE_NAMES.DASHBOARD_SESSION}=([^;]+)`));
       const authed = match?.[1] ? this.store.validateSession(match[1]) !== null : false;
       (socket as any).__privateFrpAuthed = authed;
