@@ -77,16 +77,19 @@ jobs:
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           SHORT=$(git rev-parse --short HEAD)
+          CACHE_IMAGE="ghcr.io/${OWNER}/${{ matrix.image_name }}:latest"
           echo "Building ${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }} from commit ${SHORT}"
+          docker pull "${CACHE_IMAGE}" 2>/dev/null || true
           docker buildx build --file "${{ matrix.dockerfile }}" \
-            --cache-from type=gha,scope=${{ matrix.image_name }} \
-            --cache-to type=gha,scope=${{ matrix.image_name }},mode=max \
+            --cache-from "type=gha,scope=${{ matrix.image_name }}" \
+            --cache-from "type=registry,ref=${CACHE_IMAGE}" \
+            --cache-to "type=gha,scope=${{ matrix.image_name }},mode=max" \
             --pull \
             --build-arg "BUILD_COMMIT=${SHORT}" \
             --build-arg "BUILD_VERSION=${{ env.RELEASE_NUMBER }}" \
+            --tag "${CACHE_IMAGE}" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${SHORT}" \
-            --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:latest" \
             --push .
 
   release:
