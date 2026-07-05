@@ -23,15 +23,18 @@ function textResponse(text: string, init?: ResponseInit): Response {
   });
 }
 
-const COOKIE_OPTIONS =
-  'Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=10368000';
-
-function getSessionCookie(value: string) {
-  return `${COOKIE_NAMES.DASHBOARD_SESSION}=${value}; ${COOKIE_OPTIONS}`;
+function getSessionCookie(value: string, isSecure: boolean) {
+  const secure = isSecure ? 'Secure; ' : '';
+  return `${COOKIE_NAMES.DASHBOARD_SESSION}=${value}; Path=/; HttpOnly; SameSite=Strict; ${secure}Max-Age=10368000`;
 }
 
-function getClearCookie() {
-  return `${COOKIE_NAMES.DASHBOARD_SESSION}=; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=0`;
+function getClearCookie(isSecure: boolean) {
+  const secure = isSecure ? 'Secure; ' : '';
+  return `${COOKIE_NAMES.DASHBOARD_SESSION}=; Path=/; HttpOnly; SameSite=Strict; ${secure}Max-Age=0`;
+}
+
+function isHttps(req: Request): boolean {
+  return req.url.startsWith('https:') || req.headers.get('x-forwarded-proto') === 'https';
 }
 
 export class DashboardServer {
@@ -51,13 +54,19 @@ export class DashboardServer {
   }
 
   start(): void {
+    const tls = this.config.tlsCertFile && this.config.tlsKeyFile
+      ? { certFile: this.config.tlsCertFile, keyFile: this.config.tlsKeyFile }
+      : undefined;
+
     this.server = Bun.serve({
       hostname: this.config.host,
       port: this.config.dashboardPort,
+      tls,
       fetch: (req, server) => this.handleRequest(req, server),
       websocket: this.websocket
     });
-    console.log(`[dashboard] http://${this.config.host}:${this.config.dashboardPort}`);
+    const proto = tls ? 'https' : 'http';
+    console.log(`[dashboard] ${proto}://${this.config.host}:${this.config.dashboardPort}`);
   }
 
   stop(): void {
@@ -112,7 +121,7 @@ export class DashboardServer {
         status: 302,
         headers: {
           location: '/login',
-          'set-cookie': getClearCookie()
+          'set-cookie': getClearCookie(isHttps(req))
         }
       });
     }
@@ -149,7 +158,7 @@ export class DashboardServer {
       status: 302,
       headers: {
         location: '/agents.html',
-        'set-cookie': getSessionCookie(token)
+        'set-cookie': getSessionCookie(token, isHttps(req))
       }
     });
   }

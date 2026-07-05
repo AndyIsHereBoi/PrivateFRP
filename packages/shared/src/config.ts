@@ -15,6 +15,8 @@ export interface ServerRuntimeConfig {
   dataDir: string;
   dashboardPublicIp: string;
   dataTcpNoDelay: boolean;
+  tlsCertFile: string | null;
+  tlsKeyFile: string | null;
 }
 
 export interface AgentRuntimeConfig {
@@ -46,7 +48,9 @@ export function readServerRuntimeConfig(env: Record<string, string | undefined>)
     dataDir,
     dashboardPublicIp: readString(env, 'DASHBOARD_PUBLIC_IP', '')
     ,
-    dataTcpNoDelay: readBool(env, 'DATA_TCP_NODELAY', false)
+    dataTcpNoDelay: readBool(env, 'DATA_TCP_NODELAY', false),
+    tlsCertFile: readString(env, 'TLS_CERT_FILE', '') || null,
+    tlsKeyFile: readString(env, 'TLS_KEY_FILE', '') || null
   };
 }
 
