@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { hashSecret, nowMs, randomId, randomSecret, secretsMatch } from '@privatefrp/shared';
 import type { AgentRecord, TunnelRecord, TunnelType } from '@privatefrp/shared';
 
@@ -12,30 +12,45 @@ export class ServerStore {
     this.db = new Database(databasePath);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS agents (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        secret_hash TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at INTEGER NOT NULL,
-        last_heartbeat INTEGER,
-        latency_ms INTEGER,
-        remote_address TEXT,
-        active_connections INTEGER NOT NULL DEFAULT 0,
-        version TEXT
-      );
-      CREATE TABLE IF NOT EXISTS tunnels (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        type TEXT NOT NULL,
-        listen_port INTEGER NOT NULL,
-        target_host TEXT NOT NULL,
-        target_port INTEGER NOT NULL,
-        agent_id TEXT,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at INTEGER NOT NULL
+      CREATE TABLE IF NOT EXISTS _migrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        applied_at INTEGER NOT NULL
       );
     `);
+
+    this.runMigrations();
+  }
+
+  private runMigrations(): void {
+    const applied = new Set(
+      this.db.query(`SELECT name FROM _migrations`).all().map((r: any) => String(r.name))
+    );
+
+    const migrationsDir = join(dirname(import.meta.dir ?? __dirname), 'migrations');
+    const files = readdirSync(migrationsDir).sort();
+    for (const file of files) {
+      if (!file.endsWith('.sql')) continue;
+      const name = file.replace(/\.sql$/, '');
+      if (applied.has(name)) continue;
+      const sql = readFileSync(join(migrationsDir, file), 'utf-8').trim();
+      if (!sql) continue;
+      try {
+        this.db.exec(sql);
+        this.db.query(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(name, nowMs());
+        console.log(`[migration] applied ${name}`);
+      } catch (err) {
+        const msg = String(err);
+        // "duplicate column" means the column already exists (fresh DB has it in base schema)
+        // still mark migration as applied so we don't retry on every restart
+        if (msg.includes('duplicate column')) {
+          this.db.query(`INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)`).run(name, nowMs());
+          console.log(`[migration] applied ${name} (column already existed)`);
+        } else {
+          console.log(`[migration] skipped ${name} (${err})`);
+        }
+      }
+    }
   }
 
   listAgents(): AgentRecord[] {
