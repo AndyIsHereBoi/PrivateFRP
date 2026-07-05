@@ -170,6 +170,28 @@
       }
     });
   }
+
+  // Click-to-copy for any element with class "copy-value"
+  document.addEventListener('click', async (e) => {
+    const el = e.target?.closest?.('.copy-value');
+    if (!el) return;
+    const text = el.getAttribute('data-copy') || el.textContent || '';
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      window.showToast('Copied: ' + text, 'success');
+    } catch {
+      window.showToast('Failed to copy');
+    }
+  });
 })();
 
 function esc(s) {

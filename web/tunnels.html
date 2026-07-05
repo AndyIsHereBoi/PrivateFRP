@@ -161,8 +161,8 @@
             return `<tr>
               <td>${esc(t.name)}</td>
               <td>${badge} ${stateBadge}</td>
-              <td><code>${publicAddr}</code></td>
-              <td>${esc(t.targetHost)}:${t.targetPort}</td>
+              <td><code class="copy-value" data-copy="${esc(publicAddr)}" style="cursor:pointer">${publicAddr}</code></td>
+              <td><code class="copy-value" data-copy="${esc(t.targetHost)}:${t.targetPort}" style="cursor:pointer">${esc(t.targetHost)}:${t.targetPort}</code></td>
               <td>
                 <button class="btn btn-edit" onclick="openEditTunnel('${esc(t.id)}')">Edit</button>
                 <button class="btn btn-compact ${toggleClass}" onclick="toggleTunnelEnabled('${esc(t.id)}', ${t.enabled ? 'true' : 'false'})">${toggleLabel}</button>

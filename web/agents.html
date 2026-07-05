@@ -39,14 +39,14 @@
     <table>
       <thead>
         <tr>
-          <th style="width:16%">ID</th>
-          <th style="width:14%">Name</th>
-          <th style="width:9%">Status</th>
-          <th style="width:9%">Version</th>
-          <th style="width:9%">Latency</th>
+          <th style="width:10%">ID</th>
+          <th style="width:20%">Name</th>
+          <th style="width:8%">Status</th>
+          <th style="width:8%">Version</th>
+          <th style="width:8%">Latency</th>
           <th style="width:13%">IP Address</th>
           <th style="width:15%">Last Heartbeat</th>
-          <th style="width:15%">Actions</th>
+          <th style="width:18%">Actions</th>
         </tr>
       </thead>
       <tbody id="agents-tbody">
@@ -57,10 +57,10 @@
     <div class="card">
       <h3 style="margin-top:0">Register Agent</h3>
       <p style="color:#94a3b8;font-size:0.9rem;margin-bottom:1rem">Create a new agent credential pair for a machine you want to connect.</p>
-      <button class="btn btn-primary" onclick="document.getElementById('registerModal').classList.add('open')">Register New Agent</button>
+      <button class="btn btn-primary" onclick="openRegisterModal()">Register New Agent</button>
     </div>
 
-    <div class="modal-bg" id="registerModal" onclick="if(event.target===this)this.classList.remove('open')">
+    <div class="modal-bg" id="registerModal" onclick="if(event.target===this)closeRegisterModal()">
       <div class="modal">
         <h2>Register New Agent</h2>
         <p style="color:#94a3b8;margin:0.5rem 0 1rem;font-size:0.9rem">Give your agent a name and click Generate to get its credentials.</p>
@@ -72,8 +72,8 @@
           <p style="color:#fbbf24;font-size:0.8rem">Copy the secret now - it won't be shown again.</p>
         </div>
         <div class="actions mt-1">
-          <button class="btn btn-success" onclick="registerAgent()">Generate</button>
-          <button class="btn" style="background:#334155" onclick="document.getElementById('registerModal').classList.remove('open')">Close</button>
+          <div id="regGenerateBtn"><button class="btn btn-success" onclick="registerAgent()">Generate</button></div>
+          <button class="btn" style="background:#334155" onclick="closeRegisterModal()">Close</button>
         </div>
       </div>
     </div>
@@ -109,7 +109,7 @@
           const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '\u2014';
           const ver = a.version ? esc(a.version) : '\u2014';
           return `<tr>
-            <td><code style="font-size:0.78rem">${esc(a.id)}</code></td>
+            <td><code style="font-size:0.78rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%" title="${esc(a.id)}">${esc(a.id)}</code></td>
             <td>${esc(a.name)}</td>
             <td>${status}</td>
             <td><code style="font-size:0.76rem">${ver}</code></td>
@@ -156,7 +156,19 @@
       document.getElementById('regId').textContent = data.agentId;
       document.getElementById('regSecret').textContent = data.agentSecret;
       document.getElementById('regResult').style.display = 'block';
+      document.getElementById('regGenerateBtn').style.display = 'none';
       await refreshAgents();
+    }
+
+    function openRegisterModal() {
+      document.getElementById('regName').value = '';
+      document.getElementById('regResult').style.display = 'none';
+      document.getElementById('regGenerateBtn').style.display = '';
+      document.getElementById('registerModal').classList.add('open');
+    }
+
+    function closeRegisterModal() {
+      document.getElementById('registerModal').classList.remove('open');
     }
 
     refreshAgents();
