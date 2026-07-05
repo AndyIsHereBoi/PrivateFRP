@@ -6,3 +6,5 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
