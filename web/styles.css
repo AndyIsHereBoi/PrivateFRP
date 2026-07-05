@@ -46,9 +46,9 @@ h3 { font-size: 1rem; font-weight: 600; color: #fed7aa; margin: 1rem 0 0.5rem; }
   border-radius: 8px;
   line-height: 1.2;
 }
-table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
+table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; table-layout: fixed; }
 th { background: #0f172a; padding: 0.75rem 1rem; text-align: left; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
-td { padding: 0.75rem 1rem; border-top: 1px solid #334155; font-size: 0.9rem; }
+td { padding: 0.75rem 1rem; border-top: 1px solid #334155; font-size: 0.9rem; text-align: left; }
 tr:hover td { background: #263347; }
 .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
 .badge-green { background: #14532d; color: #4ade80; }

@@ -39,19 +39,18 @@
     <table>
       <thead>
         <tr>
-          <th>ID</th>
-          <th>Name</th>
-          <th>Status</th>
-          <th>Version</th>
-          <th>Latency</th>
-          <th>Current Connections</th>
-          <th>IP Address</th>
-          <th>Last Heartbeat</th>
-          <th>Actions</th>
+          <th style="width:16%">ID</th>
+          <th style="width:14%">Name</th>
+          <th style="width:9%">Status</th>
+          <th style="width:9%">Version</th>
+          <th style="width:9%">Latency</th>
+          <th style="width:13%">IP Address</th>
+          <th style="width:15%">Last Heartbeat</th>
+          <th style="width:15%">Actions</th>
         </tr>
       </thead>
       <tbody id="agents-tbody">
-        <tr><td colspan="9" style="color:#64748b;text-align:center">No agents registered</td></tr>
+        <tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>
       </tbody>
     </table>
 
@@ -115,12 +114,13 @@
             <td>${status}</td>
             <td><code style="font-size:0.76rem">${ver}</code></td>
             <td>${latency}</td>
-            <td>${Number(a.activeConnections || 0)}</td>
             <td>${esc(a.remoteAddress || '') || '\u2014'}</td>
             <td>${hb}</td>
             <td>
-              <button class="btn btn-compact ${a.enabled ? 'btn-danger' : 'btn-success'}" data-agent-id="${esc(a.id)}" data-agent-enabled="${a.enabled ? '1' : '0'}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">${a.enabled ? 'Disable' : 'Enable'}</button>
-              <button class="btn btn-danger" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button>
+              <div style="display:flex;gap:0.35rem;flex-wrap:nowrap">
+                <button class="btn btn-compact ${a.enabled ? 'btn-danger' : 'btn-success'}" data-agent-id="${esc(a.id)}" data-agent-enabled="${a.enabled ? '1' : '0'}" onclick="toggleAgentEnabled(this.dataset.agentId,this.dataset.agentEnabled)">${a.enabled ? 'Disable' : 'Enable'}</button>
+                <button class="btn btn-danger" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a.name)}" onclick="deleteAgent(this.dataset.agentId,this.dataset.agentName)">Delete</button>
+              </div>
             </td>
           </tr>`;
         }).join('');
