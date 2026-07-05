@@ -85,6 +85,7 @@ jobs:
             --build-arg "BUILD_VERSION=${{ env.RELEASE_NUMBER }}" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${{ env.RELEASE_NUMBER }}" \
             --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:${SHORT}" \
+            --tag "ghcr.io/${OWNER}/${{ matrix.image_name }}:latest" \
             --push .
 
   release:
