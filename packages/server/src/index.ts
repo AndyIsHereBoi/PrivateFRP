@@ -20,7 +20,9 @@ export async function startServer(): Promise<void> {
   await control.start();
   dashboard.start();
 
-  globalThis.console.log(`[server] build ${process.env.BUILD_VERSION ?? 'dev'} (${process.env.BUILD_COMMIT ?? 'unknown'})`);
+  const buildVer = process.env.BUILD_VERSION ?? 'dev';
+  const buildCommit = process.env.BUILD_COMMIT ?? 'unknown';
+  globalThis.console.log(`[server] PrivateFRP Server v${buildVer} (commit ${buildCommit})`);
   globalThis.console.log(`[server] agent control plane on ${config.host}:${config.agentPort}`);
   globalThis.console.log(`[server] dashboard http on ${config.host}:${config.dashboardPort}`);
   const shutdown = async (signal: string) => {

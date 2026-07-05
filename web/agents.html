@@ -21,6 +21,10 @@
           <code class="public-ip-value" id="public-ip-value">YOUR_PUBLIC_IP</code>
           <button class="btn-copy" id="copy-public-ip-btn" type="button">Copy</button>
         </div>
+        <div class="version-wrap">
+          <span class="version-label">v</span>
+          <code class="version-value" id="version-value">SERVER_VERSION</code>
+        </div>
         <form method="POST" action="/logout" style="display:inline">
           <button class="btn btn-danger" type="submit">Sign Out</button>
         </form>
@@ -38,6 +42,7 @@
           <th>ID</th>
           <th>Name</th>
           <th>Status</th>
+          <th>Version</th>
           <th>Latency</th>
           <th>Current Connections</th>
           <th>IP Address</th>
@@ -46,7 +51,7 @@
         </tr>
       </thead>
       <tbody id="agents-tbody">
-        <tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>
+        <tr><td colspan="9" style="color:#64748b;text-align:center">No agents registered</td></tr>
       </tbody>
     </table>
 
@@ -88,7 +93,7 @@
         lastAgentsRenderKey = renderKey;
 
         if (!agents.length) {
-          tbody.innerHTML = '<tr><td colspan="8" style="color:#64748b;text-align:center">No agents registered</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="9" style="color:#64748b;text-align:center">No agents registered</td></tr>';
           return;
         }
 
@@ -103,10 +108,12 @@
             ? '-'
             : Math.max(0, Math.round(Number(a.latencyMs))) + ' ms';
           const hb = a.lastHeartbeat ? new Date(a.lastHeartbeat).toLocaleString() : '\u2014';
+          const ver = a.version ? esc(a.version) : '\u2014';
           return `<tr>
             <td><code style="font-size:0.78rem">${esc(a.id)}</code></td>
             <td>${esc(a.name)}</td>
             <td>${status}</td>
+            <td><code style="font-size:0.76rem">${ver}</code></td>
             <td>${latency}</td>
             <td>${Number(a.activeConnections || 0)}</td>
             <td>${esc(a.remoteAddress || '') || '\u2014'}</td>

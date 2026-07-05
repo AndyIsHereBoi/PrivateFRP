@@ -25,12 +25,17 @@ function textResponse(text: string, init?: ResponseInit): Response {
 export class DashboardServer {
   private readonly sockets = new Set<any>();
   private server: any = null;
+  private readonly serverVersion: string;
+  private readonly serverCommit: string;
 
   constructor(
     private readonly config: ServerRuntimeConfig,
     private readonly control: ControlPlane,
     private readonly assetBasePath: string
-  ) {}
+  ) {
+    this.serverVersion = process.env.BUILD_VERSION || 'dev';
+    this.serverCommit = process.env.BUILD_COMMIT || 'unknown';
+  }
 
   start(): void {
     this.server = Bun.serve({
@@ -221,10 +226,12 @@ export class DashboardServer {
   private async serveHtml(fileName: string, options: { loginError?: string; status?: number } = {}): Promise<Response> {
     const path = `${this.assetBasePath}/web/${fileName}`;
     const text = await Bun.file(path).text();
-    const withPublicIp = text.replace(/YOUR_PUBLIC_IP/g, this.config.dashboardPublicIp || this.config.publicHost);
+    let result = text.replace(/YOUR_PUBLIC_IP/g, this.config.dashboardPublicIp || this.config.publicHost);
+    result = result.replace(/SERVER_VERSION/g, this.serverVersion);
+    result = result.replace(/SERVER_COMMIT/g, this.serverCommit);
     const withError = options.loginError
-      ? withPublicIp.replace('<!-- <div class="alert alert-error">Invalid username or password</div> -->', `<div class="alert alert-error">${options.loginError}</div>`)
-      : withPublicIp;
+      ? result.replace('<!-- <div class="alert alert-error">Invalid username or password</div> -->', `<div class="alert alert-error">${options.loginError}</div>`)
+      : result;
     return new Response(withError, {
       status: options.status ?? 200,
       headers: { 'content-type': 'text/html; charset=utf-8' }
@@ -273,7 +280,7 @@ export class DashboardServer {
           return;
         }
         if (request.type === 'status') {
-          socket.send(JSON.stringify({ reqId, ok: true, data: { dashboardPort: this.config.dashboardPort, agentPort: this.config.agentPort } }));
+          socket.send(JSON.stringify({ reqId, ok: true, data: { dashboardPort: this.config.dashboardPort, agentPort: this.config.agentPort, version: this.serverVersion, commit: this.serverCommit } }));
           return;
         }
         socket.send(JSON.stringify({ reqId, ok: false, error: 'unknown request' }));

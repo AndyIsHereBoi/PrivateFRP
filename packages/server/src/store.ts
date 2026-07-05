@@ -21,7 +21,8 @@ export class ServerStore {
         last_heartbeat INTEGER,
         latency_ms INTEGER,
         remote_address TEXT,
-        active_connections INTEGER NOT NULL DEFAULT 0
+        active_connections INTEGER NOT NULL DEFAULT 0,
+        version TEXT
       );
       CREATE TABLE IF NOT EXISTS tunnels (
         id TEXT PRIMARY KEY,
@@ -41,7 +42,8 @@ export class ServerStore {
     return this.db.query(`
       SELECT id, name, secret_hash as secretHash, enabled, created_at as createdAt,
              last_heartbeat as lastHeartbeat, latency_ms as latencyMs,
-             remote_address as remoteAddress, active_connections as activeConnections
+             remote_address as remoteAddress, active_connections as activeConnections,
+             version
       FROM agents
       ORDER BY created_at DESC
     `).all().map((row: any) => ({
@@ -53,7 +55,8 @@ export class ServerStore {
       lastHeartbeat: row.lastHeartbeat === null || row.lastHeartbeat === undefined ? null : Number(row.lastHeartbeat),
       latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
       remoteAddress: row.remoteAddress === null || row.remoteAddress === undefined ? null : String(row.remoteAddress),
-      activeConnections: Number(row.activeConnections || 0)
+      activeConnections: Number(row.activeConnections || 0),
+      version: row.version === null || row.version === undefined ? null : String(row.version)
     }));
   }
 
@@ -61,7 +64,8 @@ export class ServerStore {
     const row = this.db.query(`
       SELECT id, name, secret_hash as secretHash, enabled, created_at as createdAt,
              last_heartbeat as lastHeartbeat, latency_ms as latencyMs,
-             remote_address as remoteAddress, active_connections as activeConnections
+             remote_address as remoteAddress, active_connections as activeConnections,
+             version
       FROM agents
       WHERE id = ?
     `).get(agentId) as any;
@@ -74,7 +78,8 @@ export class ServerStore {
       lastHeartbeat: row.lastHeartbeat === null || row.lastHeartbeat === undefined ? null : Number(row.lastHeartbeat),
       latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
       remoteAddress: row.remoteAddress === null || row.remoteAddress === undefined ? null : String(row.remoteAddress),
-      activeConnections: Number(row.activeConnections || 0)
+      activeConnections: Number(row.activeConnections || 0),
+      version: row.version === null || row.version === undefined ? null : String(row.version)
     } : null;
   }
 
@@ -113,6 +118,10 @@ export class ServerStore {
       SET last_heartbeat = ?, latency_ms = ?, remote_address = ?
       WHERE id = ?
     `).run(heartbeatAt, latencyMs, remoteAddress, agentId);
+  }
+
+  updateAgentVersion(agentId: string, version: string): void {
+    this.db.query(`UPDATE agents SET version = ? WHERE id = ?`).run(version, agentId);
   }
 
   setAgentConnections(agentId: string, activeConnections: number): void {

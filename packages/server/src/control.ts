@@ -32,6 +32,7 @@ type AgentConnectionState = {
   parser: FrameParser;
   agentId: string;
   agentName: string;
+  agentVersion: string | null;
   remoteAddress: string | null;
   connectedAt: number;
   lastHeartbeat: number;
@@ -235,6 +236,7 @@ export class ControlPlane {
         lastHeartbeat: live?.lastHeartbeat ?? null,
         latencyMs: live?.lastLatency ?? null,
         activeConnections: agent.activeConnections,
+        version: live?.agentVersion ?? agent.version ?? null,
         connected: Boolean(live)
       };
     });
@@ -578,9 +580,10 @@ export class ControlPlane {
   private handleAgentFrame(socket: Socket, frame: Frame): void {
     switch (frame.type) {
       case FRAME_TYPES.AGENT_HELLO: {
-        const payload = frame.payload as { agentId?: string; agentSecret?: string; agentName?: string; protocolVersion?: number } | undefined;
+        const payload = frame.payload as { agentId?: string; agentSecret?: string; agentName?: string; agentVersion?: string; protocolVersion?: number } | undefined;
         const agentId = String(payload?.agentId || '');
         const agentSecret = String(payload?.agentSecret || '');
+        const agentVersion = typeof payload?.agentVersion === 'string' ? payload.agentVersion : null;
         const agent = this.store.authenticateAgent(agentId, agentSecret);
         if (!agent) {
           writeSocket(socket, encodeFrame({ type: FRAME_TYPES.ERROR, payload: { message: 'unauthorized' } }));
@@ -596,6 +599,7 @@ export class ControlPlane {
           parser: (socket as any).__privateFrpParser as FrameParser,
           agentId: agent.id,
           agentName: payload?.agentName || agent.name,
+          agentVersion,
           remoteAddress: String((socket as any).remoteAddress ?? '') || null,
           connectedAt: nowMs(),
           lastHeartbeat: nowMs(),
@@ -606,6 +610,9 @@ export class ControlPlane {
         this.agentConnections.set(agent.id, state);
         this.store.setAgentConnections(agent.id, 0);
         this.store.touchAgent(agent.id, nowMs(), null, state.remoteAddress);
+        if (agentVersion) {
+          this.store.updateAgentVersion(agent.id, agentVersion);
+        }
         this.writeToAgent(state, encodeFrame({
           type: FRAME_TYPES.SERVER_HELLO,
           payload: {
@@ -616,7 +623,7 @@ export class ControlPlane {
         this.pushConfigToAgent(agent.id);
         void this.refreshTunnelListeners();
         this.broadcastDashboard();
-        console.log(`[agent] connected ${agent.id} (${agent.name}) - ${String((socket as any).remoteAddress ?? 'unknown')}`);
+        console.log(`[agent] connected ${agent.id} (${agent.name}) v${agentVersion ?? '?'} - ${String((socket as any).remoteAddress ?? 'unknown')}`);
         return;
       }
       case FRAME_TYPES.HEARTBEAT: {

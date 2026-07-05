@@ -22,6 +22,7 @@ export interface AgentRecord {
   latencyMs: number | null;
   remoteAddress: string | null;
   activeConnections: number;
+  version: string | null;
   connected?: boolean;
 }
 
@@ -36,6 +37,7 @@ export interface AgentHelloFrame {
   agentId: string;
   agentSecret: string;
   agentName?: string;
+  agentVersion?: string;
   protocolVersion: number;
 }
 

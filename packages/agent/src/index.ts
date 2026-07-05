@@ -22,6 +22,8 @@ export async function startAgent(): Promise<void> {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  globalThis.console.log(`[agent] build ${process.env.BUILD_VERSION ?? 'dev'} (${process.env.BUILD_COMMIT ?? 'unknown'})`);
+  const buildVer = process.env.BUILD_VERSION ?? 'dev';
+  const buildCommit = process.env.BUILD_COMMIT ?? 'unknown';
+  globalThis.console.log(`[agent] PrivateFRP Agent v${buildVer} (commit ${buildCommit})`);
   globalThis.console.log(`[agent] connecting to ${config.serverHost}:${config.serverPort}`);
 }

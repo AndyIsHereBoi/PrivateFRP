@@ -9,7 +9,6 @@
     "dev": "bun run src/start.ts",
     "dev:server": "SERVER_MODE=1 bun run src/start.ts",
     "dev:agent": "bun run src/start.ts",
-    "typecheck": "bunx tsc -p tsconfig.check.json --pretty false --noEmit",
     "server": "bun run packages/server/src/cli.ts",
     "agent": "bun run packages/agent/src/cli.ts"
   },

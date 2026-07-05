@@ -156,6 +156,7 @@ export class AgentClient {
         agentId: this.config.agentId,
         agentSecret: this.config.agentSecret,
         agentName: this.config.agentName,
+        agentVersion: process.env.BUILD_VERSION || undefined,
         protocolVersion: 1
       }
     });
