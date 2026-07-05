@@ -1,6 +1,8 @@
 # PrivateFRP
 
-PrivateFRP is a Bun + TypeScript reverse proxy and tunnel platform with an agent control plane and an independent web dashboard.
+PrivateFRP is a reverse proxy and tunnel platform with an agent control plane and an independent web dashboard.
+
+> **Note:** Docker is the only supported deployment method. Running directly with Bun is not covered.
 
 ## Layout
 
@@ -11,7 +13,23 @@ PrivateFRP is a Bun + TypeScript reverse proxy and tunnel platform with an agent
 
 ## Run
 
-1. Set the server and dashboard environment variables from the `examples/server/server.env` and `examples/agent/agent.env` files.
-2. Start the agent with `bun run agent` or the server with `bun run server`.
+Copy and configure the environment files from `examples/`:
 
-The agent/server control channel uses plain TCP. The dashboard is served separately over plain HTTP by default.
+```bash
+cp examples/server/server.env.example server.env
+cp examples/agent/agent.env.example agent.env
+```
+
+### Server
+
+```bash
+docker compose -f examples/server/compose.yml up -d
+```
+
+### Agent
+
+```bash
+docker compose -f examples/agent/compose.yml up -d
+```
+
+Images are published to `ghcr.io/andyishereboi/privatefrp-server` and `ghcr.io/andyishereboi/privatefrp-agent`.
